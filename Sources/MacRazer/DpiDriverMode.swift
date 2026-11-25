@@ -28,13 +28,20 @@ enum DpiDriverModeState: Equatable, Sendable {
 /// back if the mouse fell back to normal mode. A change that fails isn't retried at once:
 /// the poll tries again `recheckInterval` later, at most `maxAttempts` times per connection,
 /// then not until the next connection, wake or change of mind. When it isn't wanted, normal
-/// mode is written back only where this run may have left driver mode (`maybeSet`).
+/// mode is written back where this run may have left driver mode (`maybeSet`), and where a
+/// run that crashed or was killed left it (`checkLeftover`): the mode is read once a run,
+/// and written only when it reads as driver mode.
 struct DpiDriverModeBook: Equatable, Sendable {
     /// How often the poll reads the mode while it is engaged, and how long a failed change
     /// waits before the poll tries it again.
     static let recheckInterval: TimeInterval = 30
     /// Failed changes on one connection before the poll stops trying.
     static let maxAttempts = 3
+    /// How long a connection has answered before the mode is read for one an earlier run left
+    /// (`checkLeftover`). By then `ButtonRemapper` has said whether it wants driver mode on this
+    /// mouse: at launch the first reads come before it knows which mouse this is, and a mouse
+    /// in driver mode then is most often one it is about to want again.
+    static let leftoverCheckDelay: TimeInterval = 10
 
     /// What prompts a look at the mode.
     enum Occasion: Equatable, Sendable {
@@ -55,6 +62,10 @@ struct DpiDriverModeBook: Equatable, Sendable {
         case recheck
         /// Write normal mode and read it back.
         case restore
+        /// It isn't wanted and this run never set it: read the mode, once a run, and write
+        /// normal mode back only if it reads as driver mode, which a run that crashed or was
+        /// killed left there (the DPI button does nothing until then).
+        case checkLeftover
     }
 
     /// `ButtonRemapper` needs driver mode: the DPI button has an action MacRazer carries out.
@@ -69,16 +80,30 @@ struct DpiDriverModeBook: Equatable, Sendable {
     /// read finds it, and cleared once normal mode reads back. Quitting restores normal mode
     /// only then.
     private(set) var maybeSet = false
+    /// When the last quiet check that went unanswered was (`recheckUnanswered`), so the next
+    /// waits `recheckInterval` as one that was answered does, rather than going out at every
+    /// poll for as long as the mouse doesn't answer it.
+    private(set) var uncheckedSince: TimeInterval?
+    /// When the mouse first answered on this connection (`answered`), for `leftoverCheckDelay`.
+    private(set) var answeringSince: TimeInterval?
+    /// The mode has been read once this run (`checkLeftover`, or an engage, which reads first),
+    /// or this run wrote normal mode and read it back. From then on only this run can have
+    /// left the mouse in driver mode, which `maybeSet` covers.
+    private(set) var leftoverChecked = false
 
     /// What to do now.
     func step(for occasion: Occasion, now: TimeInterval) -> Step {
         if wanted {
             if let verifiedAt {
-                return now - verifiedAt >= Self.recheckInterval ? .recheck : .nothing
+                let lastCheck = max(verifiedAt, uncheckedSince ?? verifiedAt)
+                return now - lastCheck >= Self.recheckInterval ? .recheck : .nothing
             }
             return mayTry(occasion, now: now) ? .engage : .nothing
         }
-        return maybeSet && mayTry(occasion, now: now) ? .restore : .nothing
+        if maybeSet { return mayTry(occasion, now: now) ? .restore : .nothing }
+        guard !leftoverChecked, occasion == .mouseAnswered, let answeringSince,
+              now - answeringSince >= Self.leftoverCheckDelay else { return .nothing }
+        return mayTry(occasion, now: now) ? .checkLeftover : .nothing
     }
 
     /// A first try, or a retry the poll is allowed (see the type's notes).
@@ -98,6 +123,8 @@ struct DpiDriverModeBook: Equatable, Sendable {
     /// Another connection to the mouse, or none: nothing verified on the last one holds.
     mutating func connectionChanged() {
         verifiedAt = nil
+        uncheckedSince = nil
+        answeringSince = nil
         failures = 0
         lastFailureAt = nil
     }
@@ -105,21 +132,46 @@ struct DpiDriverModeBook: Equatable, Sendable {
     /// The Mac woke, or the mouse came back: it may have lost the mode, and deserves a try.
     mutating func doubtful() { connectionChanged() }
 
+    /// A read of the mouse went through on this connection at `now`.
+    mutating func answered(at now: TimeInterval) {
+        if answeringSince == nil { answeringSince = now }
+    }
+
     /// A write of driver mode is about to go out, or a read found the mouse in it.
     mutating func mayHaveSet() { maybeSet = true }
 
     mutating func engaged(at now: TimeInterval) {
         verifiedAt = now
+        uncheckedSince = nil
         failures = 0
         lastFailureAt = nil
         maybeSet = true
+        leftoverChecked = true
+    }
+
+    /// A quiet check (`recheck`) went unanswered at `now`. Nothing else changes: the mouse is
+    /// most likely still in the mode.
+    mutating func recheckUnanswered(at now: TimeInterval) { uncheckedSince = now }
+
+    /// The mode read `mode` while it isn't wanted (`checkLeftover`). Returns whether normal
+    /// mode is to be written back: only when it reads as driver mode, which this run then
+    /// counts as possibly set (`maybeSet`). Any other value, normal or not, is left alone.
+    mutating func leftoverRead(_ mode: UInt16) -> Bool {
+        failures = 0
+        lastFailureAt = nil
+        leftoverChecked = true
+        guard mode == BLEProtocol.DeviceMode.driver.value else { return false }
+        maybeSet = true
+        return true
     }
 
     mutating func restored() {
         verifiedAt = nil
+        uncheckedSince = nil
         failures = 0
         lastFailureAt = nil
         maybeSet = false
+        leftoverChecked = true
     }
 
     mutating func failed(at now: TimeInterval) {

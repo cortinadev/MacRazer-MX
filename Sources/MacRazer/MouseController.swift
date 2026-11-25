@@ -1546,8 +1546,9 @@ final class MouseController: ObservableObject, @unchecked Sendable {
     /// The mouse goes back to normal mode by itself when it sleeps, reconnects or is switched
     /// off and on, and MacRazer writes normal mode back when it is no longer wanted and when
     /// it quits (`restoreDpiDriverModeForQuit`). If MacRazer crashes or is killed, nothing
-    /// writes it back: the DPI button does nothing until the mouse sleeps or is switched off
-    /// and on.
+    /// writes it back then: the DPI button does nothing until the mouse sleeps or is switched
+    /// off and on, or until MacRazer runs again without wanting driver mode, which reads the
+    /// mode once and puts normal mode back (`DpiDriverModeBook.Step.checkLeftover`).
     private func syncDpiDriverMode(_ occasion: DpiDriverModeBook.Occasion) {
         guard !deviceTestActiveForIO else { return }
         guard let bluetooth = device as? BluetoothDevice,
@@ -1561,6 +1562,7 @@ final class MouseController: ObservableObject, @unchecked Sendable {
             driverMode.connectionChanged()
         }
         let now = ProcessInfo.processInfo.systemUptime
+        if occasion == .mouseAnswered { driverMode.answered(at: now) }
         let step = driverMode.step(for: occasion, now: now)
         switch step {
         case .nothing:
@@ -1578,8 +1580,11 @@ final class MouseController: ObservableObject, @unchecked Sendable {
                 GestureDebugLog.log("DEVMODE \(step == .engage ? "engaged" : "checked"): "
                                     + (change == .alreadySet ? "already in driver mode" : "driver mode written and read back"))
             } catch BLEProtocol.DeviceModeError.unreadable where step == .recheck {
-                // Most likely still in the mode; the next poll reads again.
-                GestureDebugLog.log("DEVMODE check unanswered, read again next poll")
+                // Most likely still in the mode. Read again a whole interval later, as after
+                // an answer: at every poll, a mouse that stopped answering this read would get
+                // it every few seconds, each holding the queue up to a lenient timeout.
+                driverMode.recheckUnanswered(at: now)
+                GestureDebugLog.log("DEVMODE check unanswered, read again in \(Int(DpiDriverModeBook.recheckInterval)) s")
             } catch {
                 driverMode.failed(at: now)
                 driverModeError = Self.dpiDriverModeErrorText(error)
@@ -1587,8 +1592,31 @@ final class MouseController: ObservableObject, @unchecked Sendable {
             }
         case .restore:
             restoreNormalMode(on: bluetooth, now: now)
+        case .checkLeftover:
+            // A background read too: it gives way to a tap, and the next poll does it.
+            if userWorkPending { return }
+            checkForLeftoverDriverMode(on: bluetooth, now: now)
         }
         publishDriverMode()
+    }
+
+    /// `io` only. Driver mode isn't wanted and this run never set it: reads the mode, and only
+    /// if it reads as driver mode (an earlier run crashed or was killed with the mouse in it)
+    /// writes normal mode back. A read that goes unanswered is tried again like any change
+    /// (`DpiDriverModeBook.failed`), and nothing is written.
+    private func checkForLeftoverDriverMode(on bluetooth: BluetoothDevice, now: TimeInterval) {
+        let mode: UInt16
+        do {
+            mode = try bluetooth.readDeviceMode()
+        } catch {
+            driverMode.failed(at: now)
+            GestureDebugLog.log("DEVMODE leftover check unanswered (\(driverMode.failures) on this connection): \(error)")
+            return
+        }
+        guard driverMode.leftoverRead(mode) else { return }
+        GestureDebugLog.log("DEVMODE found in driver mode with none wanted, left by an earlier run: restoring")
+        setDriverModeMaybeSet(true)
+        restoreNormalMode(on: bluetooth, now: now)
     }
 
     /// `io` only. Writes normal mode and reads it back.
@@ -1680,6 +1708,13 @@ final class MouseController: ObservableObject, @unchecked Sendable {
         guard !RenderOptions.isActive else { return }
         userCommand { [weak self] in
             guard let self else { return }
+            // A press of the button isn't the test's: the Bluetooth test closed the app's own
+            // connection (`releaseBluetoothForDeviceTest`), and `ensureDevice` would open it
+            // again under the test, whose reads then go unanswered.
+            guard !self.deviceTestActiveForIO else {
+                GestureDebugLog.log("DPI cycle skipped: a device test holds the mouse")
+                return
+            }
             do {
                 guard let bluetooth = try self.ensureDevice() as? BluetoothDevice,
                       RazerDevices.dpiButtonPrivateKeys(pid: bluetooth.productID) != nil else {

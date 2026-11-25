@@ -43,10 +43,18 @@ enum PrivateKeyReport {
 }
 
 /// Turns the successive key arrays of report 4 into a down and an up per key. A frame that
-/// holds what the last one held changes nothing, so a report delivered twice (the mouse
-/// matches as two HID devices, and each delivers it) fires once.
+/// holds what the last one held changes nothing.
+///
+/// The mouse matches as two HID devices, and each delivers every frame. Those copies don't
+/// always alternate: IOKit hands over all of one device's waiting reports at once, so after
+/// the main thread was busy for longer than a short press's 55 ms the order is one device's
+/// press and release, then the other's, which one shared array would take for two presses.
+/// So only one device's frames count (`update(_:from:)`): the first to deliver one, until it
+/// goes away (`sourceGone`).
 struct PrivateKeyTracker: Equatable, Sendable {
     private(set) var held: Set<UInt8> = []
+    /// The device whose frames count, nil until one delivers a frame.
+    private(set) var source: Int?
 
     /// The events from `keys`, the keys held now: releases first, then presses, each in code
     /// order so the result never depends on a set's order.
@@ -55,6 +63,23 @@ struct PrivateKeyTracker: Equatable, Sendable {
         let pressed = keys.subtracting(held).sorted().map { PrivateKeyEvent(code: $0, isDown: true) }
         held = keys
         return released + pressed
+    }
+
+    /// The same for a frame from the HID device `source`. Nothing for a frame from any device
+    /// but the one whose frames count.
+    mutating func update(_ keys: Set<UInt8>, from source: Int) -> [PrivateKeyEvent] {
+        if self.source == nil { self.source = source }
+        guard self.source == source else { return [] }
+        return update(keys)
+    }
+
+    /// The HID device `source` went away. If its frames were the ones counting, what it held
+    /// comes up, as no release will come from it now (the mouse disconnected, most often),
+    /// and the next device to deliver a frame counts.
+    mutating func sourceGone(_ source: Int) -> [PrivateKeyEvent] {
+        guard self.source == source else { return [] }
+        self.source = nil
+        return update([])
     }
 }
 
@@ -76,8 +101,9 @@ protocol PrivateKeySource: AnyObject {
 ///
 /// An `IOHIDManager` finds the mouse's HID devices, now and whenever macOS enumerates them
 /// again (a reconnect), and each is watched as the gesture trace watches it
-/// (`GestureDebugHIDWatch`): its own buffer and an input report callback. All of them feed
-/// one tracker, which is what makes a report that comes from two of them count once.
+/// (`GestureDebugHIDWatch`): its own buffer and an input report callback whose context is
+/// that device's entry. All of them feed one tracker, which counts one device's reports
+/// (`PrivateKeyTracker.update(_:from:)`), so a report that comes from two of them counts once.
 ///
 /// Main thread only, like the run loop it schedules on. `@unchecked Sendable` states that
 /// discipline, the same as `HIDInputWatcher`.
@@ -87,16 +113,32 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
     private var tracker = PrivateKeyTracker()
     private var onEvent: ((PrivateKeyEvent) -> Void)?
     private var productID: Int?
-    /// Retained for the C callbacks' context while running, released by `stop()`.
+    /// Retained for the manager's C callbacks' context while running, released by `stop()`.
     private var selfContext: UnsafeMutableRawPointer?
     /// Bumped by every start and stop, so events handed off before a stop are dropped.
     private var generation = 0
+    /// The id the next device watched gets, for the tracker.
+    private var nextSourceID = 0
 
     /// One HID device of the mouse, and the buffer its reports land in, kept until it goes.
-    private struct Watched {
+    /// The context of its input report callback, so a report says which device it came from.
+    private final class Watched: @unchecked Sendable {
         let device: IOHIDDevice
+        let id: Int
         let buffer: UnsafeMutablePointer<UInt8>
         let size: Int
+        /// Weak: the watcher keeps its entries, not the other way round.
+        weak var watcher: DpiPrivateKeyWatcher?
+
+        init(device: IOHIDDevice, id: Int, size: Int, watcher: DpiPrivateKeyWatcher) {
+            self.device = device
+            self.id = id
+            self.size = size
+            self.watcher = watcher
+            buffer = .allocate(capacity: size)
+        }
+
+        deinit { buffer.deallocate() }
     }
 
     var isRunning: Bool { manager != nil }
@@ -168,44 +210,51 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
         guard isRunning, !watched.contains(where: { CFEqual($0.device, device) }) else { return }
         let size = IOHIDDeviceGetProperty(device, kIOHIDMaxInputReportSizeKey as CFString) as? Int ?? 0
         let open = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
-        guard size > 0, open == kIOReturnSuccess, let context = selfContext else {
+        guard size > 0, open == kIOReturnSuccess else {
             GestureDebugLog.log("PRIVKEY watch can't open a device: open=\(HIDDevice.HIDError.hex(open)) maxInputReport=\(size)")
             return
         }
-        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: size)
-        IOHIDDeviceRegisterInputReportCallback(device, buffer, size, { context, _, _, _, reportID, report, length in
-            guard let context else { return }
-            Unmanaged<DpiPrivateKeyWatcher>.fromOpaque(context).takeUnretainedValue()
-                .received(reportID: Int(reportID), bytes: Array(UnsafeBufferPointer(start: report, count: max(0, length))))
-        }, context)
-        watched.append(Watched(device: device, buffer: buffer, size: size))
+        nextSourceID &+= 1
+        let entry = Watched(device: device, id: nextSourceID, size: size, watcher: self)
+        IOHIDDeviceRegisterInputReportCallback(device, entry.buffer, size, { context, _, _, _, reportID, report, length in
+            // Pointer movement comes through here too, at the polling rate: only report 4 is
+            // copied and looked at.
+            guard let context, Int(reportID) == PrivateKeyReport.reportID else { return }
+            let entry = Unmanaged<Watched>.fromOpaque(context).takeUnretainedValue()
+            entry.watcher?.received(reportID: Int(reportID),
+                                    bytes: Array(UnsafeBufferPointer(start: report, count: max(0, length))),
+                                    from: entry.id)
+        }, Unmanaged.passUnretained(entry).toOpaque())
+        watched.append(entry)
     }
 
     private func unwatch(_ device: IOHIDDevice) {
         guard let index = watched.firstIndex(where: { CFEqual($0.device, device) }) else { return }
-        release(watched.remove(at: index))
+        let entry = watched.remove(at: index)
+        release(entry)
+        // What this device held won't be released by it now.
+        deliver(tracker.sourceGone(entry.id))
     }
 
-    /// Stops a device's reports and closes it. Its buffer goes on the next turn of the run
-    /// loop, never inside IOKit's own call (the removal callback is one).
+    /// Stops a device's reports and closes it. Its entry, and with it the buffer, goes on the
+    /// next turn of the run loop, never inside IOKit's own call (the removal callback is one).
     private func release(_ entry: Watched) {
         IOHIDDeviceRegisterInputReportCallback(entry.device, entry.buffer, entry.size, nil, nil)
         IOHIDDeviceClose(entry.device, IOOptionBits(kIOHIDOptionsTypeNone))
-        let buffer = UncheckedBuffer(pointer: entry.buffer)
-        DispatchQueue.main.async { buffer.pointer.deallocate() }
-    }
-
-    /// A buffer handed to the next turn of the main run loop to be freed there.
-    private struct UncheckedBuffer: @unchecked Sendable {
-        let pointer: UnsafeMutablePointer<UInt8>
+        DispatchQueue.main.async { withExtendedLifetime(entry) {} }
     }
 
     /// Inside IOKit's dispatch of the report: the events go to `onEvent` on the next turn of
     /// the run loop, so whatever they lead to (a stop among them) never runs in here.
-    private func received(reportID: Int, bytes: [UInt8]) {
+    private func received(reportID: Int, bytes: [UInt8], from source: Int) {
         guard isRunning, let keys = PrivateKeyReport.heldKeys(reportID: reportID, bytes: bytes) else { return }
-        let events = tracker.update(keys)
-        guard !events.isEmpty else { return }
+        deliver(tracker.update(keys, from: source))
+    }
+
+    /// Hands `events` to `onEvent` on the next turn of the run loop, unless a stop or another
+    /// start comes first.
+    private func deliver(_ events: [PrivateKeyEvent]) {
+        guard isRunning, !events.isEmpty else { return }
         let generation = generation
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isRunning, self.generation == generation else { return }

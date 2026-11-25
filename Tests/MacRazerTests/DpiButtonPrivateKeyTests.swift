@@ -157,6 +157,62 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
                                 PrivateKeyEvent(code: 0x52, isDown: true), PrivateKeyEvent(code: 0x52, isDown: false)])
     }
 
+    /// The two HID devices' copies of a short press don't always alternate: IOKit hands over
+    /// all of one device's waiting reports at once, so after the main thread was busy for
+    /// longer than the 55 ms pulse one device's press and release come before the other's.
+    /// One shared array took that for two presses (two DPI steps, or the click twice); only
+    /// the first device to deliver counts now, whatever the order.
+    func testOneShortPressIsOnePressWhicheverWayTheTwoDevicesCopiesArrive() {
+        let down = Set<UInt8>([keys.short]), none = Set<UInt8>()
+        let press = [PrivateKeyEvent(code: keys.short, isDown: true), PrivateKeyEvent(code: keys.short, isDown: false)]
+        let orders: [(String, [(Set<UInt8>, Int)])] = [
+            ("alternating", [(down, 1), (down, 2), (none, 1), (none, 2)]),
+            ("one device's frames, then the other's", [(down, 1), (none, 1), (down, 2), (none, 2)]),
+            ("the second device first", [(down, 2), (none, 2), (down, 1), (none, 1)]),
+        ]
+        for (name, frames) in orders {
+            var tracker = PrivateKeyTracker()
+            let events = frames.flatMap { tracker.update($0.0, from: $0.1) }
+            XCTAssertEqual(events, press, name)
+        }
+
+        var tracker = PrivateKeyTracker()
+        let twoPresses = [(down, 1), (none, 1), (down, 2), (none, 2), (down, 1), (none, 1), (down, 2), (none, 2)]
+        XCTAssertEqual(twoPresses.flatMap { tracker.update($0.0, from: $0.1) }, press + press, "two presses are two")
+    }
+
+    /// The device whose frames count goes away while it holds a key (the mouse disconnected
+    /// mid-hold): the key comes up, so a hold of the DPI button can't outlive the mouse and
+    /// turn the next pointer movement into a swipe. Then the next device to deliver counts.
+    /// Another device going away changes nothing.
+    func testTheCountedDeviceGoingAwayReleasesWhatItHeld() {
+        var tracker = PrivateKeyTracker()
+        XCTAssertEqual(tracker.update([keys.long], from: 1), [PrivateKeyEvent(code: keys.long, isDown: true)])
+        XCTAssertEqual(tracker.update([keys.long], from: 2), [])
+        XCTAssertEqual(tracker.sourceGone(2), [], "not the counted one")
+        XCTAssertEqual(tracker.held, [keys.long])
+        XCTAssertEqual(tracker.sourceGone(1), [PrivateKeyEvent(code: keys.long, isDown: false)])
+        XCTAssertNil(tracker.source)
+        XCTAssertEqual(tracker.sourceGone(1), [], "once")
+        XCTAssertEqual(tracker.update([keys.short], from: 3), [PrivateKeyEvent(code: keys.short, isDown: true)],
+                       "the next device to deliver counts")
+        XCTAssertEqual(tracker.update([], from: 1), [], "a device that went away and came back doesn't")
+    }
+
+    /// The release that comes with a disconnect ends the hold through the remapper as the long
+    /// key's own release would: an open dock swipe ends, and no click fires.
+    func testAReleaseFromADisconnectEndsTheHold() {
+        let emitted = Emitted()
+        let r = remapper(emitted)
+        var tracker = PrivateKeyTracker()
+        tracker.update([keys.long], from: 7).forEach(r.handlePrivateKey)
+        XCTAssertEqual(r.gestureHold?.trigger, ButtonRemapper.dpiButton)
+        tracker.sourceGone(7).forEach(r.handlePrivateKey)
+        XCTAssertNil(r.gestureHold)
+        XCTAssertTrue(move(r, dy: -200))
+        XCTAssertEqual(emitted.actions, [], "the pointer moved by anything else after that is no swipe")
+    }
+
     // MARK: Which mice
 
     /// Only the Cobra over Bluetooth was seen reporting the keys and taking driver mode: the
