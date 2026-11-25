@@ -39,25 +39,52 @@ expect rough edges until 1.0.
   gesture's default for a swipe down.
 - **The DPI button can be remapped on the Cobra HyperSpeed over Bluetooth.** Until now only the
   Basilisk V3 X HyperSpeed had it. The DPI button can take any action, a gesture included, or
-  go back to DPI Cycle (default). A function the mouse can do itself is written to it. Anything
-  else makes the mouse type F20, which MacRazer MX turns into the action, so an F20 from a
-  keyboard is caught too while one is set, and Input Monitoring may be needed. A DPI-button
-  gesture starts with None as its Click action. Tested on a real Cobra over Bluetooth: it
-  accepts the button's table entry (0x60), the read before the write and the read back work,
-  and the F20 binding reaches macOS. A raw HID and Bluetooth trace on the real mouse shows it
-  reports nothing at all while the DPI button is held, and only a 50 ms F20 pulse at the
-  release of a short press, so a hold can't be detected on that button over Bluetooth. There a
-  gesture is "click, then swipe": the click opens a 0.6 second window for the movement to
-  start. A 50-point swipe in it runs that direction's action at once, or, for Mission Control,
-  App Exposé and the Spaces, starts a swipe that follows the pointer and ends when it has been
-  still for about 0.12 s or after 1.5 s at most. With no movement the Click action runs. For
-  hold and drag, use a side button or the wheel click. The USB cable isn't supported for this,
-  and the 2.4 GHz dongle has not been investigated.
-- **A gesture trace for bug reports.** The hidden `gestureDebugLog` default now also records
-  what the mouse reports at the HID level and any unsolicited Bluetooth notifications, next to
-  the gesture holds, F20 timing and pointer movement. It never records which key a keyboard
-  typed, only F13 to F20. It needs Input Monitoring, and a relaunch after the permission is
-  granted.
+  go back to DPI Cycle (default). A function the mouse can do itself (a mouse button, a
+  keyboard shortcut it can type) is written to the button's entry (0x60) and works without the
+  app. Anything else is MacRazer MX's to carry out: on the Basilisk V3 X the mouse types F20
+  and MacRazer MX turns it into the action, so an F20 from a keyboard is caught too while one
+  is set, and Input Monitoring may be needed. On the Cobra it works through the mouse's driver
+  mode, below. Tested on a real Cobra over Bluetooth: it accepts the entry, and the read before
+  the write and the read back work. The USB cable and the 2.4 GHz dongle aren't supported for
+  this.
+- **On the Cobra, a DPI button gesture is hold and swipe.** A Cobra's DPI button is a tap/hold
+  button: a short press cycles DPI and a long press is a function only Synapse knows, so in
+  normal mode whatever is in entry 0x60 only fires when a short press is released, and a hold
+  can't be seen. The mouse supports Razer's device mode over Bluetooth (read `01 82 00 00`,
+  set `01 02 00 00` with `03 00` for driver mode and `00 00` for normal). In driver mode the
+  firmware stops acting on the button and reports it as private keys in HID input report 4: key
+  0xD2 goes down when it recognises a long press, about a second after pressing (the firmware's
+  delay, which the app can't shorten), and stays down until release, and key 0x52 pulses for
+  about 55 ms when a short press is released. MacRazer MX puts the mouse in driver mode while
+  the DPI button has an action it carries out, and holds the gesture from the long key down to
+  its release. Hold the button until the gesture starts, then swipe: Mission Control, App
+  Exposé and Spaces follow the pointer, and other actions fire once. A short press runs the
+  gesture's Click, and when that is None (shown as "DPI Cycle") MacRazer MX cycles the DPI
+  stage itself, since the firmware no longer does. Other software actions (a media key, Double
+  Click, a key the mouse can't type) fire on the short press. This replaces the earlier "click,
+  then swipe" gesture and its F20 bridge on the Cobra. The Basilisk V3 X HyperSpeed is
+  unchanged (F20), and driver mode is not enabled there: it is unverified, and another project
+  reported Bluetooth instability writing the device mode on it.
+- **Driver mode is set up, kept up and given back.** It needs Accessibility and Input
+  Monitoring, and without them the button keeps cycling DPI. It is volatile, so MacRazer MX
+  sets it on each new connection and after a wake (reading first), reads it about every 30
+  seconds to put it back if the mouse fell out of it, and tries a failed change again at most 3
+  times per connection. Normal mode is written back when the DPI button's action is cleared
+  and when MacRazer MX quits. If it crashes or is killed, the DPI button does nothing until
+  the mouse sleeps, reconnects or is switched off and on. If the mouse still holds the old F20
+  binding in entry 0x60, the factory DPI-cycle block is written back once. The Buttons page says
+  where it stands. On hardware, a trace captured the mode write being accepted and read back,
+  the link staying stable, the two keys behaving as described and normal mode restored on quit.
+  Not yet verified as a finished feature: the app's own code path, re-arming after sleep and
+  wake, the software DPI cycle, App Exposé and the side-button gesture. The device-mode key and
+  the private-key report format were learned from the documentation of OpenRazer, OpenSnek,
+  OpenSynapse and ergo-control; no code from them is used.
+- **A gesture trace for bug reports.** The hidden `gestureDebugLog` default records the gesture
+  holds, F20 timing and pointer movement, and now also the mouse's raw HID reports
+  (`HIDREPORT`), the GATT characteristics and unsolicited Bluetooth notifications, read-only
+  probes at connect (`BLEREAD`), device-mode changes (`DEVMODE`) and private-key events
+  (`PRIVKEY`). It never records which key a keyboard typed, only F13 to F20. It needs Input
+  Monitoring, and a relaunch after the permission is granted.
 
 - **More mice from test reports.**
   - **Polling confirmed with the newer command** on the Viper 8KHz, both Basilisk V4 Pro
