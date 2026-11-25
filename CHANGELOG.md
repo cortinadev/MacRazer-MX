@@ -91,17 +91,27 @@ expect rough edges until 1.0.
   mouse still won't open. Driver mode is volatile, so MacRazer MX sets it on each new
   connection and after a wake (reading first), reads it about every 30 seconds to put it back
   if the mouse fell out of it, and tries a failed change again at most 3 times per connection.
-  Normal mode is written back when the DPI button's action is cleared and when MacRazer MX
-  quits. If it crashes or is killed, the DPI button does nothing until the mouse sleeps,
-  reconnects or is switched off and on, or until the app runs again and finds driver mode left
-  over, which it then gives back. If the mouse still holds the old F20 binding in entry 0x60,
-  the factory DPI-cycle block is written back once. The Buttons page says where it stands. On
-  hardware, a trace captured the mode write being accepted and read back, the link staying
-  stable, the two keys behaving as described and normal mode restored on quit. Not yet verified
-  as a finished feature: the app's own code path, re-arming after sleep and wake, the software
-  DPI cycle, App Exposé and the side-button gesture. The device-mode key and the private-key
-  report format were learned from the documentation of OpenRazer, OpenSnek, OpenSynapse and
-  ergo-control; no code from them is used.
+  After waking, the Cobra accepts driver mode and reads it back, then resets itself to normal
+  mode as it finishes starting, which left gestures dead and the button cycling DPI for up to
+  30 seconds. So MacRazer MX reads the mode again 1 second and 3 seconds after setting it on a
+  new connection or after a wake, and puts it back if it went. While it is on, the mouse's own
+  notifications that it is starting up or going to sleep, or that its firmware changed the
+  DPI, have it read at once, at most once a second; a DPI change the app made in the last
+  2 seconds doesn't count. Normal mode is written back when the DPI button's action is cleared
+  and when MacRazer MX quits, while the mouse is connected, and no longer to a mouse that just
+  reconnected: the mode doesn't outlast a disconnect. If it crashes or is killed, the DPI
+  button does nothing until the mouse sleeps, reconnects or is switched off and on, or until
+  the app runs again and finds driver mode left over, which it then gives back. If the mouse
+  still holds the old F20 binding in entry 0x60, the factory DPI-cycle block is written back
+  once. The Buttons page says where it stands. On hardware, a trace captured the mode write
+  being accepted and read back, the link staying stable, the two keys behaving as described
+  and normal mode restored on quit. The finished feature was then used on a Cobra: hold and
+  swipe, the short press doing Click, the software DPI cycle one stage per press, the periodic
+  check over about an hour and normal mode restored at quit. The fix for the wake came from a
+  trace and hasn't been tried on the mouse yet. Not yet tried: the Hold slot, App Exposé and
+  the side-button gesture. The device-mode key and the private-key report format were learned
+  from the documentation of OpenRazer, OpenSnek, OpenSynapse and ergo-control; no code from
+  them is used.
 - **A gesture trace for bug reports.** The hidden `gestureDebugLog` default records the gesture
   holds, F20 timing and pointer movement, and now also the mouse's raw HID reports
   (`HIDREPORT`), the GATT characteristics and unsolicited Bluetooth notifications, read-only

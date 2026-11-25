@@ -26,10 +26,12 @@ in §10. The short version of the fork's differences:
   to the fork's GitHub issues.
 - **Additions.** Gesture mode and a wider DPI button remap (§6.3).
 - On a real Cobra HyperSpeed over Bluetooth, the DPI button's remap (§6.3.3) has been run, and
-  so have the mouse's driver mode and the two private keys it reports the button as (captured
-  with the gesture trace, not through the finished feature). The product code path, re-arming
-  after sleep, the software DPI cycle, App Exposé and the side-button gesture have only unit
-  tests.
+  so have the mouse's driver mode and the two private keys it reports the button as: first
+  captured with the gesture trace, then used through the product code path (hold and swipe,
+  the short press doing Click, the software DPI cycle one stage per press, the periodic check
+  over about an hour, normal mode restored at quit). Re-arming after the mouse sleeps was fixed
+  from a hardware trace (§6.3.3, the driver mode lifecycle), and the fix has not been re-tried
+  on the mouse. The Hold slot, App Exposé and the side-button gesture have only unit tests.
 
 This document explains how the app is built and how every feature works, so a future Claude
 session or a human can pick it up cold. See also:
@@ -187,13 +189,14 @@ on the Cobra HyperSpeed (Bluetooth PID `0x00DC`, vendor `0x068E`).
  little-endian u16 `03 00` (driver) or `00 00` (normal). In normal mode the firmware acts on its
  special buttons; in driver mode it reports them to the host instead, as "private keys" in HID
  input report 4 (§6.3.3). The mode is volatile: the mouse is back in normal mode after it
- sleeps, reconnects or is switched off and on. Only `DeviceMode` values can be built into the
- write (`BLEProtocol.deviceModeRequest(_:)`), and it is only ever sent to a mouse with
- `RazerDevices.dpiButtonPrivateKeys`. `BluetoothDevice.setDeviceMode(_:readFirst:)` reads first
- (so a mouse already in the mode isn't written), writes once and reads back, throwing
- `DeviceModeError` (`unreadable`: nothing written; `notTaken`; `notReadBack`) and never writing
- twice. `DPIStageTable.nextStage()` is the stage after the active one, the first after the last
- (nil with one stage), used by the software DPI cycle.
+ sleeps, reconnects or is switched off and on, and just after a wake the Cobra took it, read it
+ back and then dropped it as it finished starting (§6.3.3). Only `DeviceMode` values can be
+ built into the write (`BLEProtocol.deviceModeRequest(_:)`), and it is only ever sent to a
+ mouse with `RazerDevices.dpiButtonPrivateKeys`. `BluetoothDevice.setDeviceMode(_:readFirst:)`
+ reads first (so a mouse already in the mode isn't written), writes once and reads back,
+ throwing `DeviceModeError` (`unreadable`: nothing written; `notTaken`; `notReadBack`) and
+ never writing twice. `DPIStageTable.nextStage()` is the stage after the active one, the first
+ after the last (nil with one stage), used by the software DPI cycle.
 - `BLEProtocol` translates `RazerReport` requests and replies, so `MouseController` and the
  `RazerCommands` parsers are shared with USB. Commands without a BLE equivalent (polling
  rate, effects other than static) throw `notSupported`, and the popover hides them.
@@ -648,7 +651,10 @@ described here.
      device mode, the command catalogue, the button inventory, entries 0x60 and 0x80). A probe
      is built only from a key that is a read (`traceReadRequest`), so the trace can't write.
    - `DEVMODE ...`: the product's own reads and writes of the device mode and why (wanted,
-     engaged, checked, restored, failures, the quit-time restore).
+     engaged, checked, restored, failures, the quit-time restore), the settling re-checks
+     scheduled after an engage and what each found, a notification that called for a
+     re-check (`DEVMODE notice <code> (...)`) or was MacRazer's own DPI change, an early
+     re-check called off, and a restore dropped because its connection went.
    - `PRIVKEY down|up <code>`, `PRIVKEY watch ...` and `PRIVKEY <code> ignored`: the private
      keys as they arrive and why one was ignored (`DpiPrivateKeyWatcher`, `ButtonRemapper`).
    - `DPI cycle ...`: the stage a software DPI cycle steps to.
@@ -693,9 +699,13 @@ type) is MacRazer's, and there are two ways the app learns the button was presse
 Bluetooth, the entry `0x60` write path is confirmed on hardware (the read before the write, the
 read back). For driver mode, a trace on a real Cobra captured: the mode write accepted and read
 back, the link staying stable, the two keys below behaving as described, and normal mode
-restored on quit. **Not verified yet as a finished feature:** the product code path itself (only
-the mode and key reports were captured), re-arming after sleep and wake, the software DPI cycle,
-App Exposé, and the side-button gesture. The safety rules below stay.
+restored on quit. The product code path was then used on that mouse: hold and swipe, the short
+press doing Click, the software DPI cycle stepping one stage per press, the periodic check
+finding driver mode still set over about an hour, and normal mode restored at quit. A trace of
+a sleep and wake then showed the mouse dropping driver mode just after it was engaged on the
+new connection; the settling and notification checks below fix that, and have only unit tests
+so far. **Not yet tried:** the Hold slot, App Exposé, and the side-button gesture. The safety
+rules below stay.
 
 **Why driver mode.** The Cobra HyperSpeed's DPI button is a documented tap/hold "multifunction"
 button: a short press cycles DPI, a long press invokes a function only Synapse knows. That is
@@ -749,7 +759,9 @@ a repeated frame changes nothing.
 3. `ButtonRemapper.dpiDriverModeChanged` takes that state. While it is `.engaged`
    (`privateKeysActive`) `syncPrivateKeySource` starts `DpiPrivateKeyWatcher` for the mouse (an
    `IOHIDManager` on vendor `0x068E` and its product id, one input report callback per HID
-   device, all feeding one `PrivateKeyTracker`; main thread, Input Monitoring needed). When it
+   device, all feeding one `PrivateKeyTracker`; main thread, Input Monitoring needed). The same
+   callbacks take report 5, the mouse's notifications (`MouseNoticeReport`), handed on through
+   `onMouseNotice` to `MouseController.dpiDriverModeNoticed` (see the lifecycle below). When it
    stops being engaged the watcher stops and a hold of the DPI button ends. If the watcher can't
    start (`privateKeyInputBlocked`; `DpiPrivateKeyWatcher.startWorks` counts a manager open
    refused with no device open, kIOReturnNotPermitted, as a failure rather than a watch that
@@ -805,6 +817,39 @@ a repeated frame changes nothing.
 - **Engaged** on each new connection (`connectionChanged`) and after each wake (`doubtful`),
   while wanted, with a read first so a mouse already in driver mode isn't written, and a read
   back after a write.
+- **Settling checks.** Just after a reconnect or a wake the Cobra hasn't finished starting. A
+  trace of a real one over Bluetooth showed it accept driver mode and read it back, then reset
+  itself to normal mode a few hundred milliseconds later, around its own start-up
+  notifications (`0c`, `31`, below): gestures stopped and the button cycled DPI in the firmware
+  until the next check, 30 s later. So the first engage after `connectionChanged` or
+  `doubtful` (`fresh`) is followed by two quiet checks, `firstSettlingCheckDelay` (1 s) and
+  `secondSettlingCheckDelay` (3 s) after it (`engaged(at:wrote:)`). A check that has to write
+  driver mode again (`wrote` while it was taken for engaged: the mouse dropped it) starts the
+  two over from that write, at most `maxSettlingRounds` (3) rounds per connection or wake; a
+  fall-back the 30 s check finds does the same. The checks are `earlyChecks` in the book.
+  `MouseController.scheduleDpiDriverModeEarlyCheck` runs the next one (`nextEarlyCheck`) with a
+  one-shot `asyncAfter` on the device queue (occasion `.earlyCheck`), never a timer, and a
+  generation counter calls it off once the book drops it: a connection change, a wake, a change
+  of mind (`setWanted`) or a failed change. An early check only ever checks (it never engages,
+  restores or looks for a leftover), gives way to a command waiting on the queue and tries again
+  `driverModeEarlyCheckRetryDelay` (0.5 s) later, and keeps the limits of any check: a failed
+  write counts against `maxAttempts`, and one that goes unanswered isn't repeated (the round's
+  later check still goes).
+- **Notifications.** HID input report 5 carries the mouse's own notifications, `05 05 <code>
+  ...` over Bluetooth with the id twice (`MouseNoticeReport.notice`, up to two leading ids
+  dropped as for report 4). Codes matched (from other projects' notes and the trace, not relied
+  on): `02` DPI changed, followed by X and Y big-endian; `09` availability (`09 02` seen at
+  sleep, `09 03` documented as wake); `0c` power or connection state; `10` heartbeat; `31`
+  battery. While driver mode is taken for engaged and the last check was answered,
+  `noticed(_:at:)` turns `0c`, `09` and `02` (`MouseNotice.suggestsModeLost`) into an
+  immediate check, at most one per `noticeCheckSpacing` (1 s; each notification comes from both
+  HID devices and several come together). The rule for MacRazer's own DPI changes is by time: a
+  `02` that arrives within `ownDpiChangeWindow` (2 s), either side, of the app's own DPI write
+  is that write and calls for nothing. `MouseController.noteOwnDpiChange` stamps the time as
+  each DPI write starts and again as it ends (`cycleDpiStage`, `setDPI`, `setDPIStageValue`,
+  `applyProfile`), and the notification's time is taken on arrival on the main thread. Time
+  rather than the DPI value, since stages can share a value and the firmware's next stage could
+  be the one the app last set.
 - **Re-checked** from the poll at most every `recheckInterval` (30 s) while engaged, to put the
   mode back if the mouse fell out of it. A background check gives way to a command waiting on
   the queue, and a read that goes unanswered changes nothing (the mouse is most likely still in
@@ -817,6 +862,18 @@ a repeated frame changes nothing.
   finds it, cleared when normal mode reads back), and at quit
   (`MouseController.restoreDpiDriverModeForQuit`, from `applicationWillTerminate`, waiting at
   most `driverModeRestoreTimeout`, 3 s, for the device queue).
+- **A disconnect drops a pending restore.** Driver mode doesn't outlast a connection, so
+  `connectionChanged` clears `maybeSet` and with it any restore pending for the connection that
+  went (it returns whether one was, traced as dropped). The trace showed why: "no longer wanted"
+  came only because the mouse slept and its device went away, and the reconnect then got
+  `00 00` before driver mode was wanted again. Quitting writes nothing until driver mode is
+  engaged on the new connection. In case only MacRazer's own connection was reopened with the
+  mouse still in driver mode, the leftover read is armed again (`leftoverChecked` false): it
+  reads the mode and writes normal mode only if it finds driver mode. A wake (`doubtful`) keeps
+  a pending restore, as it is the same connection, and clearing the action or quitting while
+  connected restores as before. An observed removal of the mouse's HID device
+  (`beginWakeRecovery` with `discardBluetoothSession`) ends the connection for driver mode at
+  once (`dpiDriverModeConnectionLost`).
 - **Crash.** If MacRazer crashes or is killed, nothing writes normal mode back at that moment:
   the DPI button does nothing until the mouse sleeps, reconnects or is power-cycled, or until
   the next run. A run that does not want driver mode and never set it looks for a leftover once
@@ -902,9 +959,14 @@ leaves the button cycling DPI and says so in plain words (`dpiDriverModeErrorTex
 - **Tests.** `DpiDriverModeTests` (when the mode is read and written: not while unwanted,
  engaged at once then checked every interval, a new connection or wake engaging again,
  retries slow and capped, restore only where it may have been set, a failed restore retried;
+ settling checks 1 s and 3 s after a fresh engage, called off with the connection or the want,
+ a fall-back they find put back and the checks started over, their limits; which notifications
+ call for a check, once a second, never for the app's own DPI change; a disconnect dropping a
+ pending restore while a clear still restores; the sleep and wake from a Cobra trace replayed;
  `BluetoothDevice.setDeviceMode` driven with a mouse made of closures: read first, no write when
  already set, no write after a failed read, a write that doesn't read back isn't repeated;
- error text). `DpiButtonPrivateKeyTests` (the report read with its id once or twice, a repeated
+ error text). `DpiButtonPrivateKeyTests` (the report read with its id once or twice, report 5's
+ notifications read the same way and which of them suggest driver mode was dropped, a repeated
  frame firing nothing, the frames captured on the Cobra giving one down and one up per press;
  only the Cobra over Bluetooth having private keys; a hold and one swipe, each direction, a
  long hold without a swipe not a click, the short key as Click, with None doing nothing and
@@ -912,8 +974,9 @@ leaves the button cycling DPI and says so in plain words (`dpiDriverModeErrorTex
  Hold firing once for a long press released in place and never after a swipe, Hold on DPI
  Cycle, other actions on the short key, keys counting only while engaged, the Basilisk
  ignoring them, every reset ending the hold without Hold, a disconnect's release firing no
- Hold, the watcher started only while engaged, keys that can't be watched giving the button
- back until they open, what counts as a watcher start, driver mode wanted only with
+ Hold, the watcher started only while engaged and the notifications handed on from it, keys
+ that can't be watched giving the button back until they open, what counts as a watcher
+ start, driver mode wanted only with
  everything it needs and what is named missing, Input Monitoring asking for a reopen, the
  reopen quitting only once the new instance launched, the permission timer's rules, F20 never
  taken, the entry keeping DPI Cycle, the editor's None and DPI Cycle choices and its Hold row,
@@ -1362,8 +1425,8 @@ Tests added by the fork, in `Tests/MacRazerTests/`:
 | `GestureRecognizerTests.swift` | The recogniser alone: threshold, dominant axis, one swipe per hold, net movement. |
 | `ButtonRemapperGestureTests.swift` | Gesture holds through `ButtonRemapper.handle`: swallowing, pausing, cancel rules, defaults, persistence, tap mask. |
 | `DpiButtonGestureTests.swift` | A gesture on the DPI button of a mouse using F20 (the Basilisk V3 X), driven by F20 and pointer moves. |
-| `DpiButtonPrivateKeyTests.swift` | The Cobra's DPI button in driver mode: report 4 parsing and the tracker, a gesture held on the long key, the short key as Click (None does nothing, DPI Cycle cycles once), DPI Cycle in a direction and inert elsewhere, other actions, resets, the watcher and its retry, what driver mode needs and when the permissions are looked at again, a new gesture and a saved one, the editor's choices and status texts. |
-| `DpiDriverModeTests.swift` | When driver mode is read, written, retried and restored (`DpiDriverModeBook`), `BluetoothDevice.setDeviceMode` with a mouse made of closures, and the error text. |
+| `DpiButtonPrivateKeyTests.swift` | The Cobra's DPI button in driver mode: report 4 parsing and the tracker, report 5's notifications, a gesture held on the long key, the short key as Click (None does nothing, DPI Cycle cycles once), DPI Cycle in a direction and inert elsewhere, other actions, resets, the watcher and its retry, what driver mode needs and when the permissions are looked at again, a new gesture and a saved one, the editor's choices and status texts. |
+| `DpiDriverModeTests.swift` | When driver mode is read, written, retried and restored (`DpiDriverModeBook`), the settling checks and the notification checks after a wake, a disconnect dropping a pending restore, the Cobra's sleep and wake trace replayed, `BluetoothDevice.setDeviceMode` with a mouse made of closures, and the error text. |
 | `DockSwipeTests.swift` | Dock swipes alone: which presets are system swipes, the tracker's dead zone, axis lock, sign, clamp, end versus cancel and velocity, the scale, the event fields, the poster's repeated end. |
 | `InteractiveSwipeTests.swift` | Interactive swipes through `ButtonRemapper.handle`: following a hold, other actions firing once, resets cancelling, and a swipe ended by the DPI button's release. |
 | `DpiCycleSoftwareBridgeTests.swift` | The DPI button's saved action and entry: confirmation and restore gating, the Cobra over Bluetooth only, the safe write path, error text. |

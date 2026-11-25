@@ -33,10 +33,10 @@
 >
 > The gesture and DPI button features were first exercised by unit tests only. On a real Cobra
 > HyperSpeed over Bluetooth, the DPI button's remap has been tried, and so have the mouse's
-> driver mode and the two keys it reports the button as (captured with the trace, not yet
-> through the finished feature; details [below](#the-dpi-button), including what is still
-> unverified). Gestures that follow the pointer have been tried on a real mouse on macOS 26.3
-> (see [Gesture mode](#gesture-mode)); the rest of gesture mode has not.
+> driver mode and the two keys it reports the button as, first with the trace and then through
+> the finished feature (details [below](#the-dpi-button), including what is still untried).
+> Gestures that follow the pointer have been tried on a real mouse on macOS 26.3 (see
+> [Gesture mode](#gesture-mode)); the rest of gesture mode has not.
 
 A native menu bar app to control Razer mice on macOS. Razer does ship a Synapse for Mac now,
 but its [supported-device list](https://mysupport.razer.com/app/answers/detail/a_id/14809/~/razer-synapse-for-mac-supported-and-compatible-devices)
@@ -373,9 +373,13 @@ next.
 the read before the write, the read back) was confirmed on hardware. For driver mode, a trace
 on a real Cobra HyperSpeed over Bluetooth captured the mode write being accepted and read back,
 the link staying stable, the two private keys below behaving as described, and normal mode
-being restored on quit. **Not yet verified as a finished feature:** the app's own code path
-(only the mode and the key reports were captured with the trace), re-arming after sleep and
-wake, the software DPI cycle, App Exposé, and a gesture on a side button. The Basilisk V3 X
+being restored on quit. The finished feature was then used on that mouse: hold and swipe on
+the DPI button, the short press doing Click, the software DPI cycle stepping one stage per
+press, the periodic check finding the mouse still in driver mode over a session of about an
+hour, and normal mode restored at quit. A trace of the mouse sleeping and waking then showed
+driver mode lost for up to 30 seconds after a wake, which is now fixed (see *It is checked
+again as the mouse wakes* below); the fix itself has not been tried on the mouse yet. **Not
+yet tried:** the Hold slot, App Exposé, and a gesture on a side button. The Basilisk V3 X
 HyperSpeed is unchanged and its gesture behaviour is not verified. Please report what you see
 in an issue.
 
@@ -441,8 +445,21 @@ How driver mode is handled:
   after each wake (reading first, so a mouse already in it isn't written), and reads it about
   every 30 seconds to put it back if it fell out. A failed change is retried at the next check,
   at most three times per connection.
+- **It is checked again as the mouse wakes.** Just after waking, the Cobra accepts driver mode
+  and reads it back, then resets itself to normal mode a few hundred milliseconds later as it
+  finishes starting up. Before this was known, gestures stopped working and the button cycled
+  DPI in the firmware until the next check, up to 30 seconds later. So after setting driver
+  mode on a new connection or after a wake, the app reads it again 1 second and 3 seconds later
+  and puts it back if it went (and then checks 1 and 3 seconds after that, up to three rounds).
+  While driver mode is on, the mouse's own notifications that it is starting up or going to
+  sleep, or that its firmware changed the DPI, also make the app read the mode at once, at most
+  once a second. A DPI change the app made itself in the last 2 seconds (its DPI cycle, a DPI
+  picked in the app) doesn't count. These are single reads, not a timer, and stop when the mouse
+  disconnects or the action is cleared.
 - **It is given back.** Normal mode is written back and read back when the DPI button's action
-  is cleared (DPI Cycle) and when MacRazer MX quits (waiting at most 3 seconds). If the app
+  is cleared (DPI Cycle) and when MacRazer MX quits (waiting at most 3 seconds), while the
+  mouse is connected. When the mouse disconnects, driver mode goes with it, so nothing is
+  written to it when it comes back. If the app
   crashes or is killed, nothing writes it back at that moment: the DPI button **does nothing**
   until the mouse sleeps, reconnects or is switched off and on, or until MacRazer MX runs again.
   A run that does not need driver mode reads the mode once, about 10 seconds after the mouse
@@ -477,8 +494,9 @@ How the rest works (both mice):
   and pointer movement; the mouse's raw HID reports (`HIDREPORT` lines; never keyboard keys
   other than F13 to F20); every characteristic of Razer's Bluetooth service (`GATT`) and
   any notification that isn't a reply (`BLE unsolicited`); read-only probes sent once per
-  connection (`BLEREAD`); each read and write of the device mode (`DEVMODE`); the private keys
-  going down and up (`PRIVKEY`); and the DPI stages a short press steps to (`DPI cycle`). The
+  connection (`BLEREAD`); each read and write of the device mode and why, the re-checks as the
+  mouse settles and the notifications that call for one (`DEVMODE`); the private keys going
+  down and up (`PRIVKEY`); and the DPI stages a short press steps to (`DPI cycle`). The
   trace itself only reads from the mouse. The HID part needs **Input Monitoring**, so relaunch
   after granting it. Attach the log to an issue. Turn it off with
   `defaults delete com.cortinadev.macrazer-mx gestureDebugLog`.
