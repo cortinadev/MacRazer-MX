@@ -12,10 +12,10 @@ expect rough edges until 1.0.
   direction. Press and release without moving and its Click action runs. The defaults are
   Mission Control up, App Exposé down, Space Left and Space Right, and Click is what the button
   did before. Each of the five slots takes any normal action: a shortcut preset, a recorded
-  shortcut, a mouse click, a media key or none. Those other actions fire once per hold, when
-  the movement along the stronger axis reaches 50 points. Mission Control, App Exposé and the
-  two Space presets follow the pointer instead (see the entry below). The pointer isn't frozen
-  while you hold the button.
+  shortcut, a mouse click, a media key or none (the Cobra's DPI button adds a sixth, Hold,
+  below). Those other actions fire once per hold, when the movement along the stronger axis
+  reaches 50 points. Mission Control, App Exposé and the two Space presets follow the pointer
+  instead (see the entry below). The pointer isn't frozen while you hold the button.
 - **Gestures that follow the pointer.** In a gesture, Mission Control, App Exposé, Space Left
   and Space Right no longer type a keyboard shortcut. They are driven as the trackpad's own
   dock swipe events, so the Spaces transition, Mission Control or App Exposé follows the
@@ -59,35 +59,41 @@ expect rough edges until 1.0.
   the DPI button has an action it carries out, and holds the gesture from the long key down to
   its release. Hold the button until the gesture starts, then swipe: Mission Control, App
   Exposé and Spaces follow the pointer, and other actions fire once. A short press runs the
-  gesture's Click, where DPI Cycle and None are separate choices. DPI Cycle, what a new
-  gesture starts with, makes MacRazer MX cycle the DPI stage itself, since the firmware no
-  longer does. None does nothing, so the button is only the gesture. A swipe direction can
-  hold DPI Cycle too. A gesture saved by an earlier build of this branch, where None was shown
-  as "DPI Cycle" and cycled DPI, keeps None and no longer cycles. Other software actions (a
-  media key, Double Click, a key the mouse can't type) fire on the short press. This replaces
-  the earlier "click, then swipe" gesture and its F20 bridge on the Cobra. The Basilisk V3 X
-  HyperSpeed is unchanged (F20), and driver mode is not enabled there: it is unverified, and
-  another project reported Bluetooth instability writing the device mode on it.
+  gesture's Click, where DPI Cycle and None are separate choices. DPI Cycle makes MacRazer MX
+  cycle the DPI stage itself, since the firmware no longer does. None, what a new gesture
+  starts with, does nothing, so the button is only the gesture. A swipe direction can hold DPI
+  Cycle too. Holding the button without swiping and letting go runs the gesture's Hold, a sixth
+  slot with the same choices as Click, None by default, listed only for this button. It runs
+  once, on the release, and not after a swipe, a disconnect, a pause or anything else that ends
+  the hold first. A gesture saved by an earlier build keeps its Click (one where None was shown
+  as "DPI Cycle" and cycled DPI keeps None and no longer cycles), and one saved before Hold
+  reads with Hold on None. Other software actions (a media key, Double Click, a key the mouse
+  can't type) fire on the short press. This replaces the earlier "click, then swipe" gesture
+  and its F20 bridge on the Cobra. The Basilisk V3 X HyperSpeed is unchanged (F20), and driver
+  mode is not enabled there: it is unverified, and another project reported Bluetooth
+  instability writing the device mode on it.
 - **Driver mode is set up, kept up and given back.** It needs Accessibility and Input
-  Monitoring, and without them the button keeps cycling DPI. A permission granted while the
-  app runs is picked up without a relaunch: the app looks again when the popover or the
-  Buttons page opens, and every 3 seconds while a permission is all that's missing. If macOS
-  says Input Monitoring is granted but the mouse still won't open, which can last until the
-  app is reopened, the Buttons page says to quit and reopen MacRazer MX. Driver mode is
-  volatile, so MacRazer MX sets it on each new connection and after a wake (reading first),
-  reads it about every 30 seconds to put it back if the mouse fell out of it, and tries a
-  failed change again at most 3 times per connection. Normal mode is written back when the
-  DPI button's action is cleared and when MacRazer MX quits. If it crashes or is killed, the
-  DPI button does nothing until the mouse sleeps, reconnects or is switched off and on, or
-  until the app runs again and finds driver mode left over, which it then gives back. If the
-  mouse still holds the old F20 binding in entry 0x60, the factory DPI-cycle block is written
-  back once. The Buttons page says where it stands. On hardware, a trace captured the mode
-  write being accepted and read back, the link staying stable, the two keys behaving as
-  described and normal mode restored on quit. Not yet verified as a finished feature: the
-  app's own code path, re-arming after sleep and wake, the software DPI cycle, App Exposé and
-  the side-button gesture. The device-mode key and the private-key report format were learned
-  from the documentation of OpenRazer, OpenSnek, OpenSynapse and ergo-control; no code from
-  them is used.
+  Monitoring, and without them the button keeps cycling DPI. Accessibility granted while the
+  app runs is picked up without a relaunch: the app looks again when the popover or the Buttons
+  page opens, and every 3 seconds while a permission is all that's missing. Input Monitoring
+  granted while it runs takes effect only once the app is reopened (seen on macOS 26.3), so the
+  Buttons page says to turn it on in System Settings and then reopen MacRazer MX, and has a
+  Reopen MacRazer MX button, which quits the way Quit does (driver mode is given back first)
+  and opens the app again. The same shows if macOS says Input Monitoring is granted but the
+  mouse still won't open. Driver mode is volatile, so MacRazer MX sets it on each new
+  connection and after a wake (reading first), reads it about every 30 seconds to put it back
+  if the mouse fell out of it, and tries a failed change again at most 3 times per connection.
+  Normal mode is written back when the DPI button's action is cleared and when MacRazer MX
+  quits. If it crashes or is killed, the DPI button does nothing until the mouse sleeps,
+  reconnects or is switched off and on, or until the app runs again and finds driver mode left
+  over, which it then gives back. If the mouse still holds the old F20 binding in entry 0x60,
+  the factory DPI-cycle block is written back once. The Buttons page says where it stands. On
+  hardware, a trace captured the mode write being accepted and read back, the link staying
+  stable, the two keys behaving as described and normal mode restored on quit. Not yet verified
+  as a finished feature: the app's own code path, re-arming after sleep and wake, the software
+  DPI cycle, App Exposé and the side-button gesture. The device-mode key and the private-key
+  report format were learned from the documentation of OpenRazer, OpenSnek, OpenSynapse and
+  ergo-control; no code from them is used.
 - **A gesture trace for bug reports.** The hidden `gestureDebugLog` default records the gesture
   holds, F20 timing and pointer movement, and now also the mouse's raw HID reports
   (`HIDREPORT`), the GATT characteristics and unsolicited Bluetooth notifications, read-only
