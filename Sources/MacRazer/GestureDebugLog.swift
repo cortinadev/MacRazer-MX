@@ -8,7 +8,7 @@ import Foundation
 /// app can watch what its event tap receives: another process needs its own Input Monitoring
 /// grant to see the same events.
 ///
-/// Two defaults keys, each read once at launch, so relaunch after changing either.
+/// One defaults key, read once at launch, so relaunch after changing it.
 ///
 ///     defaults write com.cortinadev.macrazer-mx gestureDebugLog -bool true
 ///
@@ -18,34 +18,24 @@ import Foundation
 /// (`GATT <uuid> properties=...`) and every value the mouse sends there that isn't part of a
 /// reply the app is waiting for (`BLE unsolicited <uuid>: <hex>`); and once per Bluetooth
 /// connection, after the reads the connection starts with, a fixed list of vendor reads
-/// (`BLEProtocol.traceProbeKeys`, lines `BLEREAD <key> -> <status, header, payload>`). All of
-/// that only reads: it changes nothing on the mouse. It never records what is typed: keyboards
-/// aren't watched, and the mouse's own keyboard report is logged only when the keys in it are
-/// F13 to F20 (`GestureDebugReportFilter`).
+/// (`BLEProtocol.traceProbeKeys`, lines `BLEREAD <key> -> <status, header, payload>`). The
+/// trace itself only reads: it changes nothing on the mouse. It never records what is typed:
+/// keyboards aren't watched, and the mouse's own keyboard report is logged only when the keys
+/// in it are F13 to F20 (`GestureDebugReportFilter`).
 ///
-///     defaults write com.cortinadev.macrazer-mx gestureDebugDeviceMode -int 3
+/// It also records what MacRazer itself does with the DPI button on a mouse that reports it as
+/// private keys (`RazerDevices.dpiButtonPrivateKeys`): each read and write of the device mode
+/// and why (`DEVMODE` lines, from `MouseController` and `BluetoothDevice`), the private keys as
+/// they go down and up (`PRIVKEY` lines, `DpiPrivateKeyWatcher`), and the stages a short press
+/// steps to (`DPI cycle`).
 ///
-/// is an experiment, and does nothing unless the trace is on too. Once per connection, after
-/// the reads above, it puts the mouse in driver mode (`BLEProtocol.DeviceMode`) and reads the
-/// mode before and after, in `DEVMODE` lines. In driver mode the firmware stops handling its
-/// special buttons itself and reports them to the Mac instead: the DPI button no longer changes
-/// DPI, and MacRazer does nothing in its place. That changes how the mouse behaves until it is
-/// put back. MacRazer writes normal mode again when it quits (`DEVMODE quit`), and the mouse
-/// goes back to normal by itself when it is switched off and on. `-int 0` instead writes
-/// normal mode once per connection, the explicit restore after a quit that didn't get to it.
-/// Any other value is ignored, and no other mode can be written.
+/// To turn it off:
 ///
-/// To turn everything off:
-///
-///     defaults delete com.cortinadev.macrazer-mx gestureDebugDeviceMode
 ///     defaults delete com.cortinadev.macrazer-mx gestureDebugLog
 ///
-/// then relaunch. If the experiment ran and you aren't sure the quit restored normal mode,
-/// switch the mouse off and on.
+/// then relaunch.
 enum GestureDebugLog {
     static let defaultsKey = "gestureDebugLog"
-    /// The device-mode experiment's key (`GestureDebugProbePlan`).
-    static let deviceModeKey = "gestureDebugDeviceMode"
 
     /// Read once: the tap's hot path must not ask UserDefaults per event.
     static let enabled = UserDefaults.standard.bool(forKey: defaultsKey)
@@ -217,7 +207,8 @@ enum GestureDebugHIDWatch {
         }
     }
 
-    /// Main thread, once. Needs Input Monitoring, which the F20 bridge needs anyway.
+    /// Main thread, once. Needs Input Monitoring, which the F20 bridge and the DPI button's
+    /// private keys need anyway.
     static func startIfEnabled() {
         guard GestureDebugLog.enabled, manager == nil else { return }
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -292,53 +283,5 @@ enum GestureDebugHIDWatch {
             if page == kHIDPage_GenericDesktop, usage == kHIDUsage_GD_X || usage == kHIDUsage_GD_Y { pointer.insert(id) }
         }
         return (pointer, keyboard)
-    }
-}
-
-/// What the trace sends over Bluetooth once per connection (`MouseController`), worked out from
-/// the defaults alone so it's tested without a mouse.
-enum GestureDebugProbePlan {
-    enum Step: Equatable, Sendable {
-        /// A read-only probe, logged `BLEREAD`.
-        case read(BLEProtocol.Key)
-        /// The device-mode read before or after the experiment's write, logged `DEVMODE`.
-        case readDeviceMode(String)
-        /// The experiment's write, logged `DEVMODE`.
-        case writeDeviceMode(BLEProtocol.DeviceMode)
-        /// A `DEVMODE` line and nothing sent.
-        case note(String)
-    }
-
-    /// What `gestureDebugDeviceMode` asks for.
-    enum DeviceModeSetting: Equatable, Sendable {
-        case absent
-        case write(BLEProtocol.DeviceMode)
-        case ignored(String)
-    }
-
-    /// Driver mode for the number 3, normal mode for 0, nothing when the key isn't there, and
-    /// nothing for any other value, a true or false among them.
-    static func deviceModeSetting(_ value: Any?) -> DeviceModeSetting {
-        guard let value else { return .absent }
-        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
-            if number.doubleValue == 3 { return .write(.driver) }
-            if number.doubleValue == 0 { return .write(.normal) }
-        }
-        return .ignored(String(describing: value))
-    }
-
-    /// The read-only probes, then, when the key asks for one, the device-mode write with a read
-    /// of the mode before and after it.
-    static func steps(deviceMode: DeviceModeSetting) -> [Step] {
-        var steps = BLEProtocol.traceProbeKeys.map(Step.read)
-        switch deviceMode {
-        case .absent:
-            break
-        case .write(let mode):
-            steps += [.readDeviceMode("before"), .writeDeviceMode(mode), .readDeviceMode("after")]
-        case .ignored(let value):
-            steps.append(.note("\(GestureDebugLog.deviceModeKey)=\(value) ignored: only 3 (driver mode) and 0 (normal mode) act"))
-        }
-        return steps
     }
 }

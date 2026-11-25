@@ -61,7 +61,7 @@ enum BLEProtocol {
         /// The onboard profile slot the mouse is using, as one byte (Basilisk V4 Pro, #55).
         static let activeSlotGet = Key(0x03, 0x82, 0x00, 0x00)
         /// The mouse's device mode, a little-endian u16: `00 00` normal, `03 00` driver
-        /// (`DeviceMode`). Read and written by the gesture trace only.
+        /// (`DeviceMode`). Written only on a mouse with `RazerDevices.dpiButtonPrivateKeys`.
         static let deviceModeGet = Key(0x01, 0x82, 0x00, 0x00)
         static let deviceModeSet = Key(0x01, 0x02, 0x00, 0x00)
 
@@ -69,23 +69,50 @@ enum BLEProtocol {
         var isRead: Bool { bytes[1] & 0x80 != 0 }
     }
 
-    // MARK: - Gesture trace (diagnostic only)
+    // MARK: - Device mode
 
-    /// The device modes the gesture trace's experiment may write (`gestureDebugDeviceMode`,
-    /// see `GestureDebugLog`), and no others. In `normal` the firmware handles its special
-    /// buttons itself (the Cobra's DPI button cycles DPI); in `driver` it reports them to the
-    /// host instead, as private keys in HID input report 4 (0x52 the DPI button, 0xD2 the AI
-    /// long press), and leaves acting on them to the host.
+    /// The device modes MacRazer writes, and no others. In `normal` the firmware handles its
+    /// special buttons itself (the Cobra's DPI button cycles DPI); in `driver` it reports them
+    /// to the host instead, as private keys in HID input report 4
+    /// (`RazerDevices.dpiButtonPrivateKeys`), and leaves acting on them to the host. Driver
+    /// mode doesn't last: the mouse is back in normal mode after it sleeps, reconnects or is
+    /// switched off and on.
     enum DeviceMode: UInt8, Equatable, Sendable {
         case normal = 0x00
         case driver = 0x03
+
+        /// The u16 a read of the mode answers with for this mode (`parseDeviceMode`).
+        var value: UInt16 { UInt16(rawValue) }
     }
 
-    /// The one write the trace can send: `01 02 00 00` with `[mode, 0]`. Built only from a
+    /// The one device-mode write: `01 02 00 00` with `[mode, 0]`. Built only from a
     /// `DeviceMode`, so no other mode, and no other class 01 key, can be written this way.
     static func deviceModeRequest(_ mode: DeviceMode) -> Request {
         Request(key: .deviceModeSet, payload: [mode.rawValue, 0x00], reply: .ack)
     }
+
+    /// The read of the mode: `01 82 00 00`, no payload.
+    static let deviceModeReadRequest = Request(key: .deviceModeGet, payload: [], reply: .ack)
+
+    /// The mode a read answers with, the little-endian u16 its payload starts with (`03 00`
+    /// is driver mode, 3). Nil when the payload is too short to hold one.
+    static func parseDeviceMode(_ payload: some Collection<UInt8>) -> UInt16? {
+        let bytes = Array(payload.prefix(2))
+        guard bytes.count == 2 else { return nil }
+        return UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+    }
+
+    /// Why a change of the device mode didn't go through (`BluetoothDevice.setDeviceMode`).
+    enum DeviceModeError: Error, Equatable {
+        /// The read before the write failed or made no sense, so nothing was written.
+        case unreadable
+        /// The mouse refused the write or didn't answer it, so it may or may not have taken it.
+        case notTaken
+        /// The read after the write failed (nil), or showed another mode.
+        case notReadBack(UInt16?)
+    }
+
+    // MARK: - Gesture trace (diagnostic only)
 
     /// A read for the trace, or nil for a key that isn't one (`Key.isRead`): the trace's
     /// probes can't write anything by accident.
@@ -180,8 +207,10 @@ enum BLEProtocol {
     /// What the DPI button's entry can hold, on every mouse with
     /// `RazerDevices.supportsDpiButtonBinding`. Actions the mouse can't run itself (media
     /// keys, Double Click, a gesture, a key it can't send) use `softwareBridge`: the mouse
-    /// types F20 and MacRazer turns that into the saved action. No undocumented
-    /// consumer-control payload is sent to the mouse.
+    /// types F20 and MacRazer turns that into the saved action. A mouse with
+    /// `RazerDevices.dpiButtonPrivateKeys` keeps `dpiCycle` under them instead, and MacRazer
+    /// acts on its private keys in driver mode. No undocumented consumer-control payload is
+    /// sent to the mouse.
     enum DPIButtonBinding: Equatable, Identifiable, Sendable {
         case dpiCycle
         case leftClick
@@ -573,6 +602,14 @@ enum BLEProtocol {
             }
             guard let active = ids.firstIndex(of: bytes[0]) else { throw HIDDevice.HIDError.badResponse }
             self.init(active: active, values: values)
+        }
+
+        /// The table with the stage after the active one selected, back to the first after
+        /// the last, as the DPI button steps through them. The stages themselves don't change.
+        /// Nil when there is only one stage, and nothing to step to.
+        func nextStage() -> DPIStageTable? {
+            guard values.count > 1 else { return nil }
+            return DPIStageTable(active: (active + 1) % values.count, values: values)
         }
 
         func encoded() -> [UInt8] {

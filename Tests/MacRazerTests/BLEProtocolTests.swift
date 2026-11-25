@@ -245,6 +245,38 @@ final class BLEProtocolTests: XCTestCase {
         XCTAssertEqual(BLEProtocol.Key.deviceModeGet.bytes, [0x01, 0x82, 0x00, 0x00])
     }
 
+    /// The mode is read with `01 82 00 00` and no payload, and answers a little-endian u16:
+    /// `03 00` driver, `00 00` normal. Anything shorter is no answer.
+    func testDeviceModeIsReadAsALittleEndianU16() {
+        XCTAssertEqual(BLEProtocol.frames(id: 0x43, request: BLEProtocol.deviceModeReadRequest),
+                       [data("43 00 00 00 01 82 00 00")])
+        XCTAssertEqual(BLEProtocol.parseDeviceMode([0x03, 0x00]), 3)
+        XCTAssertEqual(BLEProtocol.parseDeviceMode([0x00, 0x00]), 0)
+        XCTAssertEqual(BLEProtocol.parseDeviceMode([0x03, 0x00, 0xFF]), 3, "past the value")
+        XCTAssertEqual(BLEProtocol.parseDeviceMode([0x00, 0x01]), 0x0100)
+        XCTAssertNil(BLEProtocol.parseDeviceMode([0x03]))
+        XCTAssertNil(BLEProtocol.parseDeviceMode([UInt8]()))
+        XCTAssertEqual(BLEProtocol.DeviceMode.driver.value, 3)
+        XCTAssertEqual(BLEProtocol.DeviceMode.normal.value, 0)
+    }
+
+    /// A short press in driver mode steps to the next stage, back to the first after the
+    /// last, as the button does in normal mode, and leaves the stages as they are. With one
+    /// stage there is nothing to step to.
+    func testTheNextStageWrapsAndKeepsTheStages() throws {
+        let stages = [400, 800, 1600, 3200, 6400]
+        XCTAssertEqual(BLEProtocol.DPIStageTable(active: 0, values: stages).nextStage(),
+                       BLEProtocol.DPIStageTable(active: 1, values: stages))
+        XCTAssertEqual(BLEProtocol.DPIStageTable(active: 3, values: stages).nextStage()?.active, 4)
+        XCTAssertEqual(BLEProtocol.DPIStageTable(active: 4, values: stages).nextStage()?.active, 0, "after the last, the first")
+        XCTAssertEqual(BLEProtocol.DPIStageTable(active: 0, values: [800, 800]).nextStage()?.active, 1,
+                       "by position, so two stages at the same DPI don't stop it")
+        XCTAssertNil(BLEProtocol.DPIStageTable(active: 0, values: [1600]).nextStage())
+        let next = try XCTUnwrap(BLEProtocol.DPIStageTable(active: 2, values: stages).nextStage())
+        XCTAssertEqual(next.encoded().first, 4, "the active stage's id, from 1")
+        XCTAssertEqual(try BLEProtocol.DPIStageTable(decoding: next.encoded()), next)
+    }
+
     func testTraceAssemblerKeepsTheWholeReply() {
         var a = BLEProtocol.TraceAssembler(id: 0x30)
         XCTAssertFalse(a.add(data("01 00 00 00 00 00 00 03")))

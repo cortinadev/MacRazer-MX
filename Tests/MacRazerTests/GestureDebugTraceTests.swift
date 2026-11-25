@@ -7,7 +7,7 @@ import XCTest
 @testable import MacRazer
 
 /// The gesture trace (`GestureDebugLog`): what it may log of a HID report, which devices it
-/// watches, and what it sends over Bluetooth for each setting of its keys.
+/// watches, and what it sends over Bluetooth.
 final class GestureDebugTraceTests: XCTestCase {
     private func line(_ id: Int, _ bytes: [UInt8]) -> String? {
         GestureDebugReportFilter.line(reportID: id, bytes: bytes)
@@ -92,32 +92,14 @@ final class GestureDebugTraceTests: XCTestCase {
 
     // MARK: Bluetooth probes
 
-    func testDeviceModeKeyActsOnlyOnThreeOrZero() {
-        typealias Plan = GestureDebugProbePlan
-        XCTAssertEqual(Plan.deviceModeSetting(nil), .absent)
-        XCTAssertEqual(Plan.deviceModeSetting(NSNumber(value: 3)), .write(.driver))
-        XCTAssertEqual(Plan.deviceModeSetting(3), .write(.driver))
-        XCTAssertEqual(Plan.deviceModeSetting(NSNumber(value: 0)), .write(.normal))
-        for value: Any in [NSNumber(value: 1), NSNumber(value: 2), NSNumber(value: -3), NSNumber(value: 256 + 3), true, false, "3", "0", 3.5] {
-            guard case .ignored = Plan.deviceModeSetting(value) else { return XCTFail("\(value)") }
+    /// The trace's probes only read: the device mode is MacRazer's own to write, and nothing
+    /// the trace sends can change it.
+    func testProbesOnlyRead() {
+        for key in BLEProtocol.traceProbeKeys {
+            XCTAssertTrue(key.isRead, "\(key.bytes)")
+            XCTAssertNotNil(BLEProtocol.traceReadRequest(key), "\(key.bytes)")
         }
-    }
-
-    func testProbesAloneSendOnlyReads() {
-        let steps = GestureDebugProbePlan.steps(deviceMode: .absent)
-        XCTAssertEqual(steps, BLEProtocol.traceProbeKeys.map(GestureDebugProbePlan.Step.read))
-        for case .read(let key) in steps { XCTAssertTrue(key.isRead, "\(key.bytes)") }
-    }
-
-    func testDeviceModeExperimentRunsAfterTheProbes() {
-        let probes = BLEProtocol.traceProbeKeys.count
-        let driver = GestureDebugProbePlan.steps(deviceMode: .write(.driver))
-        XCTAssertEqual(Array(driver.dropFirst(probes)), [.readDeviceMode("before"), .writeDeviceMode(.driver), .readDeviceMode("after")])
-        let normal = GestureDebugProbePlan.steps(deviceMode: .write(.normal))
-        XCTAssertEqual(Array(normal.dropFirst(probes)), [.readDeviceMode("before"), .writeDeviceMode(.normal), .readDeviceMode("after")])
-        let ignored = GestureDebugProbePlan.steps(deviceMode: .ignored("7"))
-        XCTAssertEqual(ignored.count, probes + 1)
-        XCTAssertFalse(ignored.contains { if case .writeDeviceMode = $0 { return true }; return false })
+        XCTAssertFalse(BLEProtocol.traceProbeKeys.contains(.deviceModeSet))
     }
 
     // MARK: Lines

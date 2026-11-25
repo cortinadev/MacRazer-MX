@@ -118,16 +118,26 @@ struct RazerDeviceInfo {
     /// (`BLEProtocol.Key.dpiButtonGet`). Firmware functions are written there, and any other
     /// action makes the button type F20 for `ButtonRemapper` to turn into it.
     var supportsDpiButtonBinding = false
-    /// The firmware acts on the DPI button only when a short press is released, whatever
-    /// function entry 0x60 holds (a key, a mouse button). Seen on a Cobra HyperSpeed over
-    /// Bluetooth with `GestureDebugLog`: it takes the F20 binding, but F20 comes as a key-down
-    /// and key-up about 50 ms apart however long the button was held, and a long hold often
-    /// sends nothing at all. So no hold of the button can be seen, and a DPI-button gesture is
-    /// "click, then swipe" there: F20 opens a short window for the swipe
-    /// (`ButtonRemapper.latchedGestureWindow`), and Click runs if none comes. This is what the
-    /// hardware does, not what the protocol suggests, and the hardware wins: set only for a
-    /// mouse seen doing it.
-    var dpiButtonActsOnRelease = false
+    /// The DPI button reports itself as private keys in driver mode, so MacRazer handles it
+    /// there instead of through F20 (`ButtonRemapper`, `MouseController.setDpiDriverModeWanted`).
+    ///
+    /// Seen on a Cobra HyperSpeed over Bluetooth with `GestureDebugLog`. In normal mode the
+    /// DPI button is a tap and hold button in the firmware: entry 0x60 fires as a 50 ms pulse
+    /// when a short press is released, and a long hold fires entry 0x80, which is off from the
+    /// factory (`00 01 00`). So whatever 0x60 holds, F20 included, no hold of the button can
+    /// be seen. In driver mode (`BLEProtocol.DeviceMode`, written and read back on that mouse,
+    /// its link staying up, and normal mode restored after) the firmware stops acting on the
+    /// button and reports it in HID input report 4 instead: `short` (Synapse's "DPI cycle"
+    /// key) when a short press is released, then nothing held 55 ms later; `long` (its "AI
+    /// launcher" key) once the firmware recognises a long press, about a second after it
+    /// began, and nothing held exactly when the button comes up. That is a true hold with a
+    /// true release. The firmware no longer cycles DPI itself in driver mode, so MacRazer
+    /// does that on a short press (`MouseController.cycleDpiStage`).
+    ///
+    /// What the hardware does wins over what the protocol suggests: another project saw its
+    /// Bluetooth link fail when writing driver mode on a Basilisk V3 X HyperSpeed, so this is
+    /// set only for a mouse seen doing all of the above.
+    var dpiButtonPrivateKeys: DpiButtonPrivateKeys? = nil
     /// The Basilisk V3 X's Multi-function (HyperShift) trigger, an onboard modifier its
     /// Bluetooth firmware doesn't let anything remap. The Buttons page says so.
     var hasMultiFunctionTrigger = false
@@ -208,15 +218,16 @@ enum RazerDevices {
         // `SideButtonReset`), and entry 0x60 took the F20 binding on a Cobra, whose DPI button
         // then typed F20. Every write reads 0x60 first and goes ahead only when it reads as
         // the DPI button (`BLEProtocol.parseDpiButtonBinding`, `BluetoothDevice.writeDpiCycleBinding`).
-        // The button only sends anything when a short press is released, so its gesture is
-        // click, then swipe (`dpiButtonActsOnRelease`).
-        .init(pid: 0x00DC, name: "Razer Cobra HyperSpeed (Bluetooth)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .bluetooth, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed", supportsDpiButtonBinding: true, dpiButtonActsOnRelease: true, detectsOnboardSideButtonRemaps: true),
+        // Its firmware only ever fires 0x60 when a short press is released, so actions MacRazer
+        // carries out (a gesture held and swiped among them) use driver mode and the private
+        // keys it reports instead of F20 (`dpiButtonPrivateKeys`).
+        .init(pid: 0x00DC, name: "Razer Cobra HyperSpeed (Bluetooth)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .bluetooth, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed", supportsDpiButtonBinding: true, dpiButtonPrivateKeys: .cobraHyperSpeed, detectsOnboardSideButtonRemaps: true),
         // Basilisk V3 X HyperSpeed over Bluetooth. The shared BLE layer covers battery, DPI,
         // stages and static lighting; the DPI Cycle assignment is handled by BluetoothDevice.
         // Its only lit zone is the scroll wheel, so brightness must target SCROLL_LED.
-        // Its DPI button keeps the hold gesture (no `dpiButtonActsOnRelease`). Unverified
-        // either way: nobody has checked on this mouse whether F20 follows the button's
-        // press and release or only comes as a pulse when a short press is released.
+        // Its DPI button keeps the F20 bridge and its hold gesture (no `dpiButtonPrivateKeys`).
+        // Unverified either way: nobody has checked on this mouse whether F20 follows the
+        // button's press and release, or whether driver mode is safe to write over its link.
         .init(pid: 0x00BA, name: "Razer Basilisk V3 X HyperSpeed (Bluetooth)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 18000, transactionId: 0x1f, matrixTransactionId: 0x1f, brightnessLed: Razer.scrollLed, connection: .bluetooth, silhouette: .cobra, dischargeCurveModelKey: nil, supportsDpiButtonBinding: true, hasMultiFunctionTrigger: true, supportsSleepTimeout: true, supportsStageEditing: true, verifiesBrightnessWrite: true),
         // Basilisk V3 Pro 35K over Bluetooth (two in-app reports on 0.7.0, no credit given). The
         // Bluetooth test is read-only: battery answered (99%), and so did the DPI stages read
@@ -1063,8 +1074,8 @@ enum RazerDevices {
     static func canCharge(pid: Int) -> Bool { info(pid: pid)?.canCharge ?? true }
     static func maxDPI(pid: Int) -> Int { info(pid: pid)?.maxDPI ?? 26000 }
     static func supportsDpiButtonBinding(pid: Int) -> Bool { info(pid: pid)?.supportsDpiButtonBinding ?? false }
-    /// False for an unknown mouse: the hold gesture until one is seen pulsing F20.
-    static func dpiButtonActsOnRelease(pid: Int) -> Bool { info(pid: pid)?.dpiButtonActsOnRelease ?? false }
+    /// Nil for an unknown mouse: driver mode is written only where it was seen working.
+    static func dpiButtonPrivateKeys(pid: Int) -> DpiButtonPrivateKeys? { info(pid: pid)?.dpiButtonPrivateKeys }
     static func hasMultiFunctionTrigger(pid: Int) -> Bool { info(pid: pid)?.hasMultiFunctionTrigger ?? false }
     static func supportsSleepTimeout(pid: Int) -> Bool { info(pid: pid)?.supportsSleepTimeout ?? false }
     static func detectsOnboardSideButtonRemaps(pid: Int) -> Bool { info(pid: pid)?.detectsOnboardSideButtonRemaps ?? false }

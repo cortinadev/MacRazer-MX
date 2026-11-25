@@ -327,9 +327,8 @@ struct DockSwipeTracker: Equatable, Sendable {
     private(set) var swipe: SystemSwipe?
     /// The progress so far (`DockSwipe.Frame.progress`).
     private(set) var progress: Double = 0
-    /// When the swipe began, and when the pointer last moved.
-    private(set) var beganAt: TimeInterval = 0
-    private(set) var lastMoveAt: TimeInterval
+    /// When the pointer last moved.
+    private var lastMoveAt: TimeInterval
     /// Net movement while undecided.
     private var dx: Double = 0
     private var dy: Double = 0
@@ -399,7 +398,6 @@ struct DockSwipeTracker: Equatable, Sendable {
         state = .swiping
         // The dead zone's movement counts, so the desktop is where the pointer is.
         progress = gain * (horizontalAxis ? dx : dy)
-        beganAt = time
         lastFrameAt = time
         return DockSwipe.Frame(kind: swipe.kind, phase: .began, progress: progress)
     }
@@ -424,12 +422,11 @@ struct DockSwipeTracker: Equatable, Sendable {
         keepSign == 0 ? value : keepSign * max(keepSign * value, 0)
     }
 
-    /// The hold is over at `time`: the button came up, or a latched hold's pointer stopped.
-    /// Returns the frame that ends the swipe, nil when none began. `ended` carries the
-    /// velocity, which fades the longer the pointer has been still before `time`, so a flick
-    /// finishes and a stop leaves it to the progress. `cancelled` when the pointer was on its
-    /// way back towards the start, or is there: the swipe snaps back, as a trackpad's does
-    /// when the fingers come back before lifting.
+    /// The hold is over at `time`: the button came up. Returns the frame that ends the swipe,
+    /// nil when none began. `ended` carries the velocity, which fades the longer the pointer
+    /// has been still before `time`, so a flick finishes and a stop leaves it to the progress.
+    /// `cancelled` when the pointer was on its way back towards the start, or is there: the
+    /// swipe snaps back, as a trackpad's does when the fingers come back before lifting.
     mutating func end(at time: TimeInterval) -> DockSwipe.Frame? {
         guard state == .swiping, let swipe else { return nil }
         state = .finished

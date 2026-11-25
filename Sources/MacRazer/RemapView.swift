@@ -125,32 +125,34 @@ struct RemapView: View {
     }
 
     /// How the gesture editor says a gesture is made. A mouse button's is held while the mouse
-    /// moves. The DPI button of a mouse that only reports a click (`dpiButtonActsOnRelease`)
-    /// can't be held, so its gesture is a click and then the movement. `followsPointer`: the
-    /// four system swipes follow the pointer on this Mac (`DockSwipe.isSupported`), so the
-    /// text says so, and what ends them.
-    nonisolated static func gestureEditorExplanation(clickThenSwipe: Bool,
+    /// moves, and so is the DPI button's F20. The DPI button of a mouse with private keys
+    /// (`ButtonRemapper.supportsDpiPrivateKeys`) starts its gesture only once the firmware has
+    /// recognised a long press, about a second in, and its short press is the click.
+    /// `followsPointer`: the four system swipes follow the pointer on this Mac
+    /// (`DockSwipe.isSupported`), so the text says so.
+    nonisolated static func gestureEditorExplanation(longPress: Bool,
                                                      followsPointer: Bool = DockSwipe.isSupported) -> String {
-        let swipes = "Mission Control, App Exposé, Space Left and Space Right follow the pointer"
-        return clickThenSwipe
-            ? "Click the DPI button, then move the mouse up, down, left or right. "
-                + (followsPointer ? swipes + " until it stops. " : "")
-                + "If you don't move the mouse, Click runs."
+        let swipes = "Mission Control, App Exposé, Space Left and Space Right follow the pointer while you hold it. "
+        return longPress
+            ? "Hold the DPI button until the gesture starts (about a second), then move the mouse up, "
+                + "down, left or right. " + (followsPointer ? swipes : "") + "A short press does Click."
             : "Hold the button and move the mouse up, down, left or right. "
-                + (followsPointer ? swipes + " while you hold it. " : "")
+                + (followsPointer ? swipes : "")
                 + "Press and release it without moving to click."
     }
 
-    /// The help under the DPI button's menu. On a mouse whose DPI button only reports a
-    /// click, it also says how a gesture is made there, since it isn't held like the others.
-    nonisolated static func dpiButtonHelpText(clickThenSwipe: Bool) -> String {
-        let help = "Media, Double Click, Gesture and keys the mouse can't type itself need MacRazer "
-            + "running, with Accessibility and Input Monitoring on. While one is set, the button "
-            + "types F20 and MacRazer turns it into the action. Choose DPI Cycle (default) to "
-            + "put the button back."
-        guard clickThenSwipe else { return help }
-        return help + " On this mouse a gesture starts with a click. "
-            + gestureEditorExplanation(clickThenSwipe: true)
+    /// The help under the DPI button's menu. On a mouse with private keys it says how MacRazer
+    /// takes the button over while it runs, and gives it back, and how a gesture is made there.
+    nonisolated static func dpiButtonHelpText(privateKeys: Bool) -> String {
+        let needs = "Media, Double Click, Gesture and keys the mouse can't type itself need MacRazer "
+            + "running, with Accessibility and Input Monitoring on. "
+        guard privateKeys else {
+            return needs + "While one is set, the button types F20 and MacRazer turns it into the action. "
+                + "Choose DPI Cycle (default) to put the button back."
+        }
+        return needs + "While one is set, the mouse is switched to a mode where MacRazer handles the DPI "
+            + "button while it runs. It goes back to normal when MacRazer quits or DPI Cycle (default) "
+            + "is chosen. " + gestureEditorExplanation(longPress: true, followsPointer: false)
     }
 
     /// The DPI button's binding and model notes.
@@ -232,14 +234,13 @@ struct RemapView: View {
     /// A gesture button's five actions, over the page like the key recorder. Each change is
     /// saved as it's made, so Done only closes it.
     private func gestureEditor(_ button: Int) -> some View {
-        let bindings = remapper.gestureBindings(for: button)
-        return ZStack {
+        ZStack {
             Color.black.opacity(0.45).onTapGesture { editingGesture = nil }
             VStack(spacing: 12) {
                 VStack(spacing: 4) {
                     Text("\(ButtonRemapper.label(for: button)) Gesture").font(.system(size: 14, weight: .semibold))
                     Text(Self.gestureEditorExplanation(
-                        clickThenSwipe: button == ButtonRemapper.dpiButton && remapper.dpiButtonActsOnRelease))
+                        longPress: button == ButtonRemapper.dpiButton && remapper.supportsDpiPrivateKeys))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
@@ -256,7 +257,10 @@ struct RemapView: View {
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                             Spacer(minLength: 6)
-                            RemapActionMenu(label: bindings?[slot].label ?? "None", noneTitle: "None",
+                            // The DPI button's Click on None cycles DPI on a mouse with
+                            // private keys, and says so.
+                            RemapActionMenu(label: remapper.gestureSlotLabel(slot, of: button),
+                                            noneTitle: remapper.gestureNoneTitle(slot: slot, of: button),
                                             ownClick: ButtonRemapper.originalClick(for: button),
                                             onPick: { remapper.setGestureAction($0, for: slot, of: button) },
                                             onRecord: { recorderError = nil; recordingSlot = slot })
@@ -549,9 +553,10 @@ private struct SideButtonResetNotice: View {
 
 /// The DPI button, on a mouse that can rebind it over Bluetooth. The same menu as every other
 /// button, with the mouse's own functions added: what the mouse can do itself is written to it
-/// (DPI Cycle, its mouse buttons, keys it can type), and anything else makes it type F20 for
-/// MacRazer to turn into the action (`ButtonRemapper.dpiButtonAssignment`). The menu waits
-/// for a read of the mouse that parses, and every write reads the button again first.
+/// (DPI Cycle, its mouse buttons, keys it can type), and anything else is MacRazer's to carry
+/// out, through F20 or, on a mouse with private keys, through driver mode
+/// (`ButtonRemapper.dpiButtonAssignment`). The menu waits for a read of the mouse that parses,
+/// and every write reads the button again first.
 private struct DpiCycleBindingSection: View {
     @ObservedObject var controller: MouseController
     @ObservedObject var remapper: ButtonRemapper
@@ -592,15 +597,16 @@ private struct DpiCycleBindingSection: View {
                                     width: 190)
                     .disabled(controller.isUpdatingDpiCycleButton || controller.dpiCycleButtonBinding == nil)
                 }
-                Text(RemapView.dpiButtonHelpText(clickThenSwipe: remapper.dpiButtonActsOnRelease))
+                Text(RemapView.dpiButtonHelpText(privateKeys: remapper.supportsDpiPrivateKeys))
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 if remapper.dpiCycleSoftwareAction != nil {
                     HStack {
-                        Text(remapper.dpiBridgeStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                        Text(remapper.dpiActionStatus).font(.system(size: 10)).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Spacer()
-                        if !remapper.keyboardCaptureAvailable {
+                        if remapper.dpiActionNeedsInputMonitoring {
                             Button("Input Monitoring") { SystemSettingsPanes.openInputMonitoring() }
                                 .font(.system(size: 10))
                         }

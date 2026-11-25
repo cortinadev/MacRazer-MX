@@ -88,44 +88,74 @@ final class DpiCycleSoftwareBridgeTests: XCTestCase {
 
     // MARK: The Cobra HyperSpeed
 
-    /// The gate is the capability, not the model: the Cobra over Bluetooth saves and confirms
-    /// a software action as the Basilisk does. Over its dongle or cable there is no Bluetooth
-    /// control channel, so nothing is saved there.
+    /// The gate is the capability, not the model: the Cobra over Bluetooth saves a software
+    /// action as the Basilisk does, but never through F20 (its private keys carry it), so F20
+    /// read from it is never confirmed as the bridge. Over its dongle or cable there is no
+    /// Bluetooth control channel, so nothing is saved there.
     func testTheCobraOverBluetoothBindsItsDpiButtonAndItsUSBLinksDont() {
         let (remapper, defaults) = remapper()
         let action = RemapAction.mediaKey(code: 16, name: "Play / Pause")
         remapper.setActiveDevice("COBRA-BT", deviceID: 0x00DC)
         XCTAssertTrue(remapper.supportsDpiButtonBinding)
+        XCTAssertTrue(remapper.supportsDpiPrivateKeys)
         XCTAssertFalse(remapper.hasMultiFunctionTrigger, "the Basilisk's note isn't shown for the Cobra")
         remapper.saveDpiSoftwareAction(action)
         XCTAssertEqual(remapper.dpiCycleSoftwareAction, action)
         remapper.confirmDpiBridge(binding: .softwareBridge)
-        XCTAssertTrue(remapper.dpiBridgeBindingConfirmed)
+        XCTAssertFalse(remapper.dpiBridgeBindingConfirmed, "F20 is never the Cobra's bridge")
 
         for pid in [0x00DB, 0x00DA] {
             remapper.setActiveDevice("COBRA-USB-\(pid)", deviceID: pid)
             XCTAssertFalse(remapper.supportsDpiButtonBinding, "PID \(pid)")
+            XCTAssertFalse(remapper.supportsDpiPrivateKeys, "PID \(pid)")
             remapper.saveDpiSoftwareAction(action)
             XCTAssertNil(remapper.dpiCycleSoftwareAction, "PID \(pid)")
             XCTAssertNil(defaults.data(forKey: "dpiCycleSoftwareAction-COBRA-USB-\(pid)"), "PID \(pid)")
         }
     }
 
-    /// Nothing is written just by connecting: the restore only puts F20 back for a mouse
-    /// with a saved software action, and only after a read of the mouse.
-    func testTheCobraIsNeverRestoredWithoutASavedAction() {
+    /// F20 is never written back to the Cobra, with or without a saved action: its actions go
+    /// through driver mode, and its entry keeps DPI Cycle.
+    func testTheCobraNeverGetsF20Back() {
         let (remapper, _) = remapper()
         remapper.setActiveDevice("COBRA-BT", deviceID: 0x00DC)
-        for binding: BLEProtocol.DPIButtonBinding? in [nil, .dpiCycle, .leftClick, .softwareBridge] {
-            XCTAssertFalse(remapper.shouldRestoreDpiBridge(binding: binding, connected: true,
-                                                           bluetooth: true, alreadyAttempted: false))
+        for action: RemapAction? in [nil, .doubleClick, .gesture(.defaults(for: ButtonRemapper.dpiButton))] {
+            remapper.saveDpiSoftwareAction(action)
+            for binding: BLEProtocol.DPIButtonBinding? in [nil, .dpiCycle, .leftClick, .softwareBridge] {
+                XCTAssertFalse(remapper.shouldRestoreDpiBridge(binding: binding, connected: true,
+                                                               bluetooth: true, alreadyAttempted: false),
+                               "\(action?.label ?? "no action"), \(binding?.label ?? "not read")")
+            }
         }
+    }
+
+    /// An F20 an earlier MacRazer left on the Cobra's entry gets DPI Cycle back, once per
+    /// connection and only after a read of the mouse shows it there, so that with MacRazer
+    /// closed the button cycles DPI again. Never on the Basilisk, whose bridge F20 is.
+    func testAnF20LeftOnTheCobraIsClearedOncePerConnection() {
+        let (remapper, _) = remapper()
+        remapper.setActiveDevice("COBRA-BT", deviceID: 0x00DC)
+        for action: RemapAction? in [nil, .gesture(.defaults(for: ButtonRemapper.dpiButton))] {
+            remapper.saveDpiSoftwareAction(action)
+            XCTAssertTrue(remapper.shouldClearDpiBridge(binding: .softwareBridge, connected: true,
+                                                        bluetooth: true, alreadyAttempted: false))
+            XCTAssertFalse(remapper.shouldClearDpiBridge(binding: .softwareBridge, connected: true,
+                                                         bluetooth: true, alreadyAttempted: true), "once")
+            XCTAssertFalse(remapper.shouldClearDpiBridge(binding: .softwareBridge, connected: false,
+                                                         bluetooth: true, alreadyAttempted: false))
+            for binding: BLEProtocol.DPIButtonBinding? in [nil, .dpiCycle, .back, .keyboardShortcut(hidUsage: 0x06, modifiers: 0x08)] {
+                XCTAssertFalse(remapper.shouldClearDpiBridge(binding: binding, connected: true,
+                                                             bluetooth: true, alreadyAttempted: false),
+                               binding?.label ?? "not read")
+            }
+        }
+        remapper.setActiveDevice("PM2533", deviceID: 0x00BA)
         remapper.saveDpiSoftwareAction(.doubleClick)
+        XCTAssertFalse(remapper.shouldClearDpiBridge(binding: .softwareBridge, connected: true,
+                                                     bluetooth: true, alreadyAttempted: false))
         XCTAssertTrue(remapper.shouldRestoreDpiBridge(binding: .dpiCycle, connected: true,
-                                                      bluetooth: true, alreadyAttempted: false))
-        XCTAssertFalse(remapper.shouldRestoreDpiBridge(binding: nil, connected: true,
-                                                       bluetooth: true, alreadyAttempted: false),
-                       "not read yet")
+                                                      bluetooth: true, alreadyAttempted: false),
+                      "the Basilisk's restore is as before")
     }
 
     // MARK: Reading before writing

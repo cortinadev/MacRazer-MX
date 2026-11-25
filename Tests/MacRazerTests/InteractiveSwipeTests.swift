@@ -63,14 +63,15 @@ final class InteractiveSwipeTests: XCTestCase {
         return r
     }
 
-    /// The same on a Cobra over Bluetooth, whose DPI button is the gesture, with F20 confirmed.
+    /// The same on a Cobra over Bluetooth, whose DPI button is the gesture, in driver mode:
+    /// its private keys are handed to `handlePrivateKey` (`longKey`).
     private func cobraRemapper(_ recorded: Recorded, bindings: GestureBindings? = nil, clock: Clock,
                                name: String = #function) -> ButtonRemapper {
         let r = ButtonRemapper(defaults: defaults(name), actionEmitter: { recorded.actions.append($0) },
                                dockSwipes: output(recorded), clock: { clock.now })
         r.setActiveDevice("COBRA-BT", deviceID: cobra)
         r.saveDpiSoftwareAction(.gesture(bindings ?? self.bindings))
-        r.confirmDpiBridge(binding: .softwareBridge)
+        r.dpiDriverModeChanged(.engaged)
         return r
     }
 
@@ -100,13 +101,10 @@ final class InteractiveSwipeTests: XCTestCase {
         return send(r, .mouseMoved, dx: dx, dy: dy)
     }
 
-    /// The Cobra's click of its DPI button: F20 down and up.
-    private func pulse(_ r: ButtonRemapper) {
-        for down in [true, false] {
-            let event = CGEvent(keyboardEventSource: nil, virtualKey: 90, keyDown: down)!
-            event.flags = []
-            _ = r.handle(type: down ? .keyDown : .keyUp, event: event)
-        }
+    /// The Cobra's long private key going down (the firmware recognised a long press of the
+    /// DPI button) or up (the button came up).
+    private func longKey(_ r: ButtonRemapper, down: Bool) {
+        r.handlePrivateKey(PrivateKeyEvent(code: DpiButtonPrivateKeys.cobraHyperSpeed.long, isDown: down))
     }
 
     // MARK: A mouse button's hold
@@ -284,142 +282,101 @@ final class InteractiveSwipeTests: XCTestCase {
 
     /// The editor says the four follow the pointer, where they do.
     func testTheEditorSaysTheSystemSwipesFollowThePointer() {
-        for clickThenSwipe in [false, true] {
-            let text = RemapView.gestureEditorExplanation(clickThenSwipe: clickThenSwipe, followsPointer: true)
-            XCTAssertTrue(text.contains("Mission Control, App Exposé, Space Left and Space Right follow the pointer"))
+        for longPress in [false, true] {
+            let text = RemapView.gestureEditorExplanation(longPress: longPress, followsPointer: true)
+            XCTAssertTrue(text.contains("Mission Control, App Exposé, Space Left and Space Right follow the pointer while you hold it."))
             XCTAssertFalse(text.contains("\u{2014}"), "no em dash")
-            XCTAssertFalse(RemapView.gestureEditorExplanation(clickThenSwipe: clickThenSwipe, followsPointer: false)
+            XCTAssertFalse(RemapView.gestureEditorExplanation(longPress: longPress, followsPointer: false)
                 .contains("follow the pointer"), "not where they stay shortcuts")
         }
     }
 
-    // MARK: The Cobra's DPI button: a click, then the swipe
+    // MARK: The Cobra's DPI button: a long press, then the swipe
 
-    /// After the click, movement drives the same swipe. With no release to end it, it ends
-    /// once the pointer has been still for `latchedSwipeStillness`, with the velocity it had
-    /// when it last moved (a flick stays a flick), and no click.
-    func testOnTheCobraTheSwipeEndsWhenThePointerStops() throws {
+    /// Held until the long key comes, then moved up: the same swipe as a mouse button's, its
+    /// moves arriving as plain pointer moves that go through, and the long key's release ends
+    /// it with the hand's velocity. No shortcut is typed and no click follows.
+    func testOnTheCobraALongPressDragsTheSwipeAndItsReleaseEndsIt() throws {
         let recorded = Recorded()
         let clock = Clock()
         let r = cobraRemapper(recorded, clock: clock)
-        pulse(r)
-        XCTAssertNotNil(r.gestureHold?.latchDeadline)
-        XCTAssertTrue(move(r, clock, dy: -10), "moves go through, as before")
-        XCTAssertEqual(recorded.frames, [])
+        longKey(r, down: true)
+        XCTAssertEqual(r.gestureHold?.trigger, ButtonRemapper.dpiButton)
+        XCTAssertTrue(move(r, clock, dy: -10), "moves go through")
+        XCTAssertEqual(recorded.frames, [], "inside the dead zone")
         move(r, clock, dy: -10)
         XCTAssertEqual(recorded.phases, [.began])
         XCTAssertEqual(recorded.frames.first?.kind, .vertical)
         for _ in 0..<10 { move(r, clock, dy: -10) }
         XCTAssertEqual(recorded.phases.filter { $0 == .changed }.count, 10)
-        let lastMove = clock.now
-        XCTAssertEqual(r.gestureHold?.latchDeadline ?? 0, lastMove + ButtonRemapper.latchedSwipeStillness,
-                       accuracy: 1e-9, "the deadline follows the pointer")
-        XCTAssertEqual(r.latchTimer?.isValid, true)
 
-        XCTAssertFalse(r.expireLatchedGesture(now: lastMove + ButtonRemapper.latchedSwipeStillness - 0.01))
-        XCTAssertTrue(r.expireLatchedGesture(now: lastMove + ButtonRemapper.latchedSwipeStillness))
+        longKey(r, down: false)
         let end = try XCTUnwrap(recorded.frames.last)
         XCTAssertEqual(end.phase, .ended)
         XCTAssertEqual(end.progress, -0.24, accuracy: 1e-9, "12 moves of 10 points up")
-        XCTAssertEqual(end.velocity, -2.0, accuracy: 0.25, "about 1000 points a second, not faded by the wait")
+        XCTAssertLessThan(end.velocity, 0, "still moving up")
         XCTAssertEqual(recorded.actions, [], "no Mission Control shortcut and no click")
         XCTAssertNil(r.gestureHold)
-        XCTAssertNil(r.latchTimer)
         XCTAssertTrue(move(r, clock, dy: -10))
-        XCTAssertEqual(recorded.phases.filter { $0 == .ended }.count, 1)
+        XCTAssertEqual(recorded.phases.filter { $0 == .ended }.count, 1, "nothing after the release")
     }
 
-    /// The timer runs the same end. Fired before the pointer has been still long enough, it
-    /// waits for the rest; the click's window is no longer what it waits for.
-    func testOnTheCobraTheTimerEndsTheSwipe() {
+    /// The gesture starts when the long press is recognised: movement before the long key
+    /// comes is not part of it.
+    func testOnTheCobraMovementBeforeTheLongKeyDoesNotCount() {
         let recorded = Recorded()
         let clock = Clock()
         let r = cobraRemapper(recorded, clock: clock)
-        pulse(r)
-        clock.now += 0.5
-        move(r, clock, dx: 30)
-        XCTAssertEqual(recorded.phases, [.began], "late in the window is still in time")
-        for _ in 0..<20 { move(r, clock, dx: 5) }
-        XCTAssertEqual(recorded.frames.count, 21, "on past the window's end")
-        clock.now += ButtonRemapper.latchedSwipeStillness / 2
-        r.latchTimer?.fire()
-        XCTAssertNotNil(r.gestureHold, "not still long enough yet")
-        XCTAssertEqual(r.latchTimer?.isValid, true, "and a timer waits for the rest")
-        clock.now += ButtonRemapper.latchedSwipeStillness / 2 + 0.001
-        r.latchTimer?.fire()
-        XCTAssertNil(r.gestureHold)
-        XCTAssertNil(r.latchTimer)
-        XCTAssertEqual(recorded.phases.last, .ended)
-        XCTAssertEqual(recorded.actions, [])
+        for _ in 0..<5 { move(r, clock, dx: 10) }
+        longKey(r, down: true)
+        XCTAssertEqual(recorded.frames, [], "50 points before the hold began")
+        move(r, clock, dx: 10)
+        XCTAssertEqual(recorded.frames, [], "10 since: inside the dead zone")
+        move(r, clock, dx: 10)
+        XCTAssertEqual(recorded.phases, [.began])
     }
 
-    /// A move that comes after the pointer has been still long enough, before the timer ran,
-    /// ends the swipe instead of moving it.
-    func testOnTheCobraALateMoveEndsTheSwipe() {
+    /// Since the long key comes only after a second, a long hold is never the click: released
+    /// without a swipe, it fires nothing and sends nothing to the Dock.
+    func testOnTheCobraALongHoldWithoutASwipeFiresNothing() {
         let recorded = Recorded()
         let clock = Clock()
         let r = cobraRemapper(recorded, clock: clock)
-        pulse(r)
-        move(r, clock, dx: -30)
-        clock.now += ButtonRemapper.latchedSwipeStillness
-        XCTAssertTrue(move(r, clock, dx: -300))
-        XCTAssertEqual(recorded.phases, [.began, .ended])
-        XCTAssertEqual(recorded.frames.last?.progress ?? 0, -0.03, accuracy: 1e-9, "the late move didn't count")
-        XCTAssertEqual(recorded.actions, [])
-    }
-
-    /// A pointer that never stops still ends the swipe, `latchedSwipeMaximum` after it began.
-    func testOnTheCobraTheSwipeEndsAtItsLongest() {
-        let recorded = Recorded()
-        let clock = Clock()
-        let r = cobraRemapper(recorded, clock: clock)
-        pulse(r)
-        move(r, clock, dx: 20)
-        let began = clock.now
-        while clock.now < began + ButtonRemapper.latchedSwipeMaximum + 0.1 {
-            move(r, clock, dx: 2)
-        }
-        XCTAssertEqual(recorded.phases.filter { $0 == .ended }.count, 1)
-        XCTAssertNil(r.gestureHold)
-        let changes = recorded.phases.filter { $0 == .changed }.count
-        XCTAssertEqual(Double(changes) * 0.01, ButtonRemapper.latchedSwipeMaximum, accuracy: 0.02)
-    }
-
-    /// The window still only waits for the movement to start: with none, its end fires the
-    /// click and nothing goes to the Dock.
-    func testOnTheCobraNoMovementIsStillTheClick() {
-        let recorded = Recorded()
-        let clock = Clock()
-        let r = cobraRemapper(recorded, clock: clock)
-        let start = clock.now
-        pulse(r)
+        longKey(r, down: true)
         move(r, clock, dx: 8, dy: -6)
-        XCTAssertTrue(r.expireLatchedGesture(now: start + ButtonRemapper.latchedGestureWindow))
-        XCTAssertEqual(recorded.actions, [playPause])
+        clock.now += 3
+        longKey(r, down: false)
+        XCTAssertEqual(recorded.actions, [], "Click is the short press's")
         XCTAssertEqual(recorded.frames, [])
+        XCTAssertNil(r.gestureHold)
     }
 
-    /// A discrete slot on the Cobra fires once and ends the hold, as before.
+    /// A slot that isn't a system swipe fires once during the movement, and the hold goes on
+    /// until the release, which fires nothing more.
     func testOnTheCobraAnotherActionStillFiresOnce() {
         let recorded = Recorded()
         let clock = Clock()
         var mixed = bindings
         mixed.right = copy
         let r = cobraRemapper(recorded, bindings: mixed, clock: clock)
-        pulse(r)
+        longKey(r, down: true)
         move(r, clock, dx: 30)
         move(r, clock, dx: 30)
         XCTAssertEqual(recorded.actions, [copy])
-        XCTAssertNil(r.gestureHold)
+        XCTAssertNotNil(r.gestureHold, "the release ends the hold, not the swipe")
+        move(r, clock, dx: 200)
+        longKey(r, down: false)
+        XCTAssertEqual(recorded.actions, [copy])
         XCTAssertEqual(recorded.frames, [])
     }
 
-    /// Whatever ends a latched hold early cancels its swipe too, with its timer, and a second
-    /// click starts over from a cancelled swipe.
+    /// Whatever ends a hold early cancels its swipe, the driver mode going away among them,
+    /// and the long key's release after it sends nothing more and fires nothing.
     func testOnTheCobraEarlyEndingsCancelTheSwipe() {
         let endings: [(String, (ButtonRemapper) -> Void)] = [
             ("paused", { $0.remappingPaused = true }),
-            ("unconfirmed", { $0.confirmDpiBridge(binding: .dpiCycle) }),
+            ("driver mode lost", { $0.dpiDriverModeChanged(.off) }),
+            ("driver mode failed", { $0.dpiDriverModeChanged(.unavailable("The mouse didn't confirm.")) }),
             ("action changed", { $0.saveDpiSoftwareAction(.doubleClick) }),
             ("mouse button", { r in
                 let event = CGEvent(mouseEventSource: nil, mouseType: .otherMouseDown, mouseCursorPosition: .zero,
@@ -429,30 +386,22 @@ final class InteractiveSwipeTests: XCTestCase {
             ("tap disabled", { _ = $0.handle(type: .tapDisabledByTimeout, event: CGEvent(source: nil)!) }),
             ("device change", { $0.setActiveDevice("OTHER-BT", deviceID: 0x00DC) }),
             ("wake", { $0.cancelGesture() }),
-            ("second click", { [self] r in pulse(r) }),
         ]
         for (name, end) in endings {
             let recorded = Recorded()
             let clock = Clock()
             let r = cobraRemapper(recorded, clock: clock, name: "\(#function)-\(name)")
-            pulse(r)
+            longKey(r, down: true)
             move(r, clock, dy: 30)
-            let timer = r.latchTimer
-            XCTAssertEqual(timer?.isValid, true, name)
             end(r)
+            XCTAssertNil(r.gestureHold, name)
             XCTAssertEqual(recorded.phases, [.began, .cancelled], name)
             XCTAssertEqual(recorded.frames.last?.progress ?? 0, 0.06, accuracy: 1e-9, name)
             XCTAssertEqual(recorded.frames.last?.velocity, 0, name)
-            XCTAssertEqual(timer?.isValid, false, "\(name): the swipe's timer is stopped")
+            longKey(r, down: false)
+            move(r, clock, dy: 30)
+            XCTAssertEqual(recorded.frames.count, 2, "\(name): nothing more")
             XCTAssertEqual(recorded.actions, [], "\(name): no click")
-            if name == "second click" {
-                XCTAssertNotNil(r.gestureHold?.latchDeadline, "a new window, from the second click")
-            } else {
-                XCTAssertNil(r.gestureHold, name)
-                move(r, clock, dy: 30)
-                XCTAssertFalse(r.expireLatchedGesture(now: clock.now + 10), name)
-                XCTAssertEqual(recorded.frames.count, 2, "\(name): nothing more")
-            }
         }
     }
 }

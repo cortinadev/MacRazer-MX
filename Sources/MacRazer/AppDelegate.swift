@@ -1029,8 +1029,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         monitor?.invalidate()
         updateTimer?.invalidate()
         updatePathMonitor?.cancel()
-        // Only acts when the gesture trace's device-mode experiment ran (`GestureDebugLog`).
-        controller.restoreTraceDeviceModeIfSet()
+        // Puts the DPI button back to normal mode, so it cycles DPI with MacRazer closed. Only
+        // acts when this run may have switched a mouse's DPI button to driver mode.
+        controller.restoreDpiDriverModeForQuit()
         controller.flushHistoryToDisk()
     }
 

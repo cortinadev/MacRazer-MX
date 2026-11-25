@@ -44,7 +44,7 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     private var nextID: UInt8 = 0x30
 
     /// One request in flight: the frames still to write and the reply being assembled.
-    /// A gesture trace exchange (`traceExchange`) collects its reply in `trace` instead.
+    /// An exchange sent once (`lenientExchange`) collects its reply in `trace` instead.
     private final class Exchange: @unchecked Sendable {
         var frames: [Data]
         var assembler: BLEProtocol.Assembler
@@ -319,13 +319,100 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
         return try exchange.assembler.result()
     }
 
-    // MARK: - Gesture trace (diagnostic only)
+    // MARK: - Device mode
 
-    /// What one trace exchange came back with: the text the trace logs, and whether the mouse
-    /// answered it with success.
-    struct TraceResult: Sendable {
-        let text: String
-        let succeeded: Bool
+    /// The mouse's device mode, as the u16 it answers with (`BLEProtocol.parseDeviceMode`):
+    /// 0 normal, 3 driver. Sent once, never retried (`lenientExchange`).
+    func readDeviceMode() throws -> UInt16 {
+        let reply = lenientExchange(BLEProtocol.deviceModeReadRequest)
+        GestureDebugLog.log("DEVMODE read 01 82 00 00 -> \(reply.text)")
+        guard let value = try BLEProtocol.parseDeviceMode(reply.payload()) else {
+            throw HIDDevice.HIDError.badResponse
+        }
+        return value
+    }
+
+    /// Sends the device-mode write once (`BLEProtocol.deviceModeRequest`). Throws unless the
+    /// mouse answers it with success.
+    func writeDeviceMode(_ mode: BLEProtocol.DeviceMode) throws {
+        let request = BLEProtocol.deviceModeRequest(mode)
+        let reply = lenientExchange(request)
+        GestureDebugLog.log("DEVMODE write 01 02 00 00 [\(GestureDebugLog.hex(request.payload))] -> \(reply.text)")
+        _ = try reply.payload()
+    }
+
+    /// Puts the mouse in `mode` (`setDeviceMode(_:readFirst:read:write:)`).
+    @discardableResult
+    func setDeviceMode(_ mode: BLEProtocol.DeviceMode, readFirst: Bool,
+                       beforeWrite: () -> Void = {}) throws -> DeviceModeChange {
+        try Self.setDeviceMode(mode, readFirst: readFirst, read: { try readDeviceMode() }, write: { mode in
+            beforeWrite()
+            try writeDeviceMode(mode)
+        })
+    }
+
+    /// What `setDeviceMode` did.
+    enum DeviceModeChange: Equatable, Sendable {
+        /// The read before showed the mouse already in the mode, so nothing was written.
+        case alreadySet
+        /// The mode was written once and read back.
+        case written
+    }
+
+    /// The device-mode change, apart from the device so tests can drive it: `read` reads the
+    /// mode (`readDeviceMode`), `write` sends the write (`writeDeviceMode`).
+    ///
+    /// With `readFirst` the mode is read before anything is written, and a mouse already in
+    /// `mode` is left alone; a read that fails then throws `unreadable`, and nothing was
+    /// written. The write is sent once. Then the mode is read back, and anything but `mode`
+    /// throws `notReadBack`; no second write follows. Without `readFirst` (going back to normal
+    /// mode, which is harmless to write again) the write goes first.
+    static func setDeviceMode(_ mode: BLEProtocol.DeviceMode, readFirst: Bool,
+                              read: () throws -> UInt16,
+                              write: (BLEProtocol.DeviceMode) throws -> Void) throws -> DeviceModeChange {
+        if readFirst {
+            guard let current = try? read() else { throw BLEProtocol.DeviceModeError.unreadable }
+            if current == mode.value { return .alreadySet }
+        }
+        do {
+            try write(mode)
+        } catch {
+            throw BLEProtocol.DeviceModeError.notTaken
+        }
+        let back = try? read()
+        guard back == mode.value else { throw BLEProtocol.DeviceModeError.notReadBack(back) }
+        return .written
+    }
+
+    // MARK: - Exchanges sent once (device mode, gesture trace)
+
+    /// What one `lenientExchange` came back with.
+    struct LenientReply: Sendable {
+        let reply: BLEProtocol.TraceAssembler?
+        let timedOut: Bool
+        /// Why it never went out, or the link went away during it.
+        let error: (any Error)?
+
+        /// The mouse answered with success, in time.
+        var succeeded: Bool { error == nil && !timedOut && reply?.isSuccess == true }
+
+        /// The payload up to its declared length, or the error the reply stands for.
+        func payload() throws -> [UInt8] {
+            if let error { throw error }
+            guard let reply, !timedOut, reply.isComplete else { throw HIDDevice.HIDError.timeout }
+            switch BLEProtocol.Status(rawValue: reply.status ?? 0) {
+            case .ok: return Array(reply.payload.prefix(reply.declaredLength))
+            case .notSupported: throw HIDDevice.HIDError.notSupported
+            case .failure, nil: throw HIDDevice.HIDError.commandFailed
+            }
+        }
+
+        /// How the gesture trace logs it (`GestureDebugLog.describe`).
+        var text: String {
+            if let error { return "failed: \(error)" }
+            guard let reply else { return "no reply" }
+            return GestureDebugLog.describe(reply, timedOut: timedOut)
+        }
     }
 
     /// Longer than `requestTimeout`: a trace read may bring back a reply larger than any the
@@ -334,23 +421,18 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     /// How long a refusal waits for a success for the same request (`TraceAssembler`).
     static let traceRefusalGrace: TimeInterval = 0.25
 
-    /// One read for the gesture trace (`GestureDebugLog`), on the caller's queue like every
-    /// other exchange: sent once, never retried, its reply kept whole. Only a key with the read
-    /// bit is sent (`BLEProtocol.traceReadRequest`). Never throws: a failure is the result.
-    func traceRead(_ key: BLEProtocol.Key) -> TraceResult {
-        guard let request = BLEProtocol.traceReadRequest(key) else {
-            return TraceResult(text: "not sent: not a read key", succeeded: false)
-        }
-        return traceExchange(request)
+    /// One read for the gesture trace (`GestureDebugLog`). Only a key with the read bit is
+    /// sent (`BLEProtocol.traceReadRequest`). Never throws: a failure is the result's text.
+    func traceRead(_ key: BLEProtocol.Key) -> String {
+        guard let request = BLEProtocol.traceReadRequest(key) else { return "not sent: not a read key" }
+        return lenientExchange(request).text
     }
 
-    /// The device-mode write of the trace's experiment (`gestureDebugDeviceMode`), sent once.
-    /// `BLEProtocol.deviceModeRequest` is the only write the trace can make.
-    func traceSetDeviceMode(_ mode: BLEProtocol.DeviceMode) -> TraceResult {
-        traceExchange(BLEProtocol.deviceModeRequest(mode))
-    }
-
-    private func traceExchange(_ request: BLEProtocol.Request) -> TraceResult {
+    /// One exchange on the caller's queue like every other: sent once, never retried, its
+    /// reply kept whole (`BLEProtocol.TraceAssembler`). A refusal waits a moment for a success
+    /// for the same request, as some Razer firmware sends one after the other. This is how
+    /// the device mode was first read and written on hardware, and both still go this way.
+    private func lenientExchange(_ request: BLEProtocol.Request) -> LenientReply {
         let id = takeID()
         let exchange = Exchange(frames: BLEProtocol.frames(id: id, request: request), id: id, traced: true)
         queue.async { self.start(exchange) }
@@ -359,14 +441,11 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
             // Read here, where frames arrive, so a late one can't land halfway through.
             let timedOut = !exchange.finished
             if self.pending === exchange { self.pending = nil }
-            if let error = exchange.error { return TraceResult(text: "failed: \(error)", succeeded: false) }
-            guard let reply = exchange.trace else { return TraceResult(text: "no reply", succeeded: false) }
-            return TraceResult(text: GestureDebugLog.describe(reply, timedOut: timedOut),
-                               succeeded: !timedOut && reply.isSuccess)
+            return LenientReply(reply: exchange.trace, timedOut: timedOut, error: exchange.error)
         }
     }
 
-    /// `queue` only. A frame went into a trace exchange's reply: finish on success, and on a
+    /// `queue` only. A frame went into a lenient exchange's reply: finish on success, and on a
     /// refusal after a short wait, in case the success for the same request follows.
     private func traceFrameTaken(_ exchange: Exchange) {
         guard let reply = exchange.trace, reply.isComplete else { return }

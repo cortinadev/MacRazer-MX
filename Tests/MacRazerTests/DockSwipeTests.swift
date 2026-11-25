@@ -87,7 +87,6 @@ final class DockSwipeTests: XCTestCase {
         XCTAssertEqual(began?.velocity, 0)
         XCTAssertTrue(t.isSwiping)
         XCTAssertEqual(t.swipe, .spaceLeft)
-        XCTAssertEqual(t.beganAt, 0.02)
     }
 
     /// The defaults: left heads for the previous Space and up opens Mission Control, as the
