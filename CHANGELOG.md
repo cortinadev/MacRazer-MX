@@ -24,8 +24,13 @@ expect rough edges until 1.0.
   go back to DPI Cycle (default). A function the mouse can do itself is written to it. Anything
   else makes the mouse type F20, which MacRazer MX turns into the action, so an F20 from a
   keyboard is caught too while one is set, and Input Monitoring may be needed. A DPI-button
-  gesture starts with None as its Click action. It isn't confirmed on a real Cobra yet, only by
-  unit tests. The USB cable and the 2.4 GHz dongle aren't supported for this.
+  gesture starts with None as its Click action. Tested on a real Cobra over Bluetooth: it
+  accepts the button's table entry (0x60), the read before the write and the read back work,
+  and the F20 binding reaches macOS. The Cobra's firmware only acts on the release of a short
+  press of the DPI button, so there a gesture is "click, then swipe": the click opens a 0.6
+  second window, a 50-point swipe in it runs that direction's action at once, and with no swipe
+  the Click action runs. Side buttons and the wheel click keep hold and swipe. The USB cable
+  and the 2.4 GHz dongle aren't supported for this.
 
 - **More mice from test reports.**
   - **Polling confirmed with the newer command** on the Viper 8KHz, both Basilisk V4 Pro

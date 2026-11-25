@@ -25,7 +25,8 @@ in §10. The short version of the fork's differences:
   gives an email address, `ProjectLinks.contact` and `ProjectLinks.newIssue(title:body:)` point
   to the fork's GitHub issues.
 - **Additions.** Gesture mode and a wider DPI button remap (§6.3).
-- Nothing in the fork's additions has been run on real hardware: only unit tests exist.
+- The DPI button bridge has been run on a real Cobra HyperSpeed over Bluetooth (§6.3.3). The
+  rest of the fork's additions, the side-button gesture included, have only unit tests.
 
 This document explains how the app is built and how every feature works, so a future Claude
 session or a human can pick it up cold. See also:
@@ -510,6 +511,11 @@ action per direction; pressed and released without a swipe, it fires its Click a
  recorder; `RemapActionMenu`'s `onGesture` adds Gesture… to the menu. `swift run MacRazer
  render-remap gesture out.png` renders the editor from preview data
  (`ButtonRemapper.loadPreviewState` has a gesture on button 5).
+- **Debug trace** (`GestureDebugLog.swift`). Off by default. `defaults write
+ com.cortinadev.macrazer-mx gestureDebugLog -bool true` and a relaunch make it append to
+ `~/Library/Logs/MacRazer MX/gesture.log`: gesture holds beginning, moving, firing and ending,
+ F20 down, up and repeat timing, and pointer deltas. Never typed text. It exists because
+ nothing outside the app can see what its tap receives. The flag is read once at launch.
 - **Tests.** `GestureRecognizerTests` (threshold, dominant axis, once per hold, net movement),
  `ButtonRemapperGestureTests` (swallowing, pass-through while paused, the cancel rules, nested
  gestures, defaults, persistence, the mask), driven through `handle(type:event:)` with
@@ -524,10 +530,30 @@ Button" section (`DpiCycleBindingSection`) only for such a mouse on Bluetooth. U
 2.4 GHz dongle are not supported: the firmware handles the button onboard there and no USB write
 for it exists in the app.
 
-**Honest status.** On the Basilisk V3 X this is upstream's, tested behaviour. On the Cobra
-HyperSpeed it is enabled (see the comment on its entry in `RazerDevices.known`) but **entry 0x60
-has not been confirmed as the DPI button on a real Cobra**. The safety rules below exist because
-of that.
+**Status.** On the Basilisk V3 X this is upstream's, tested behaviour. On the Cobra HyperSpeed
+over Bluetooth it is **confirmed on hardware**: the Cobra accepts the DPI button's function-table
+entry 0x60, the read before the write and the read back work, and the F20 binding reaches
+macOS. The safety rules below stay, since they are what made the first real write safe.
+
+**Hardware finding: a short release only.** The Cobra's firmware acts only on the *release of a
+short press* of the DPI button, whatever function is programmed (keyboard or mouse button). The
+app sees F20 down and up about 50 ms apart however long the button was held, and a long hold
+often sends nothing. "Hold the DPI button and swipe" is therefore not possible on it. On the
+Cobra a DPI-button gesture is **click, then swipe**: the click opens a 0.6 second window, moving
+the pointer 50 points in a direction during it fires that direction's action immediately
+(during the movement), and if the window passes with no swipe the Click slot's action runs
+(default None). This is the per-device flag `dpiButtonActsOnRelease` in `RazerDevices.swift`
+plus a "latched" hold in `ButtonRemapper.swift`, not a change to the recogniser: on such a mouse
+`handleDpiBridge` starts the hold with `beginGesture(_:trigger:latched:)`, which sets
+`GestureHold.latchDeadline` (`latchedGestureWindow`, 0.6 s, from an injectable clock); the F20
+key-up is swallowed but leaves the hold open; a swipe ends it; `expireLatchedGesture(now:)`,
+called on each pointer move and by `latchTimer`, ends it with the Click slot. Where the event
+pipeline below says the key-up ends the hold, that is the hold behaviour of mice without the
+flag. Tests: `DpiButtonGestureTests`. Mice flagged otherwise (the Basilisk
+V3 X HyperSpeed, not verified) keep the hold behaviour for the DPI button. Ordinary mouse
+buttons (side buttons, wheel click) keep true hold and swipe, which has still only been
+exercised by unit tests on real-hardware terms. The window and the latched hold are
+documented from the behaviour; the code is the reference for the exact names.
 
 - **Assignments** (`BLEProtocol.DPIButtonBinding`): `.dpiCycle` (factory, `dpiCycleBlock`),
  mouse buttons by `buttonID` (`.leftClick` through `.scrollDown`), `.keyboardShortcut(hidUsage:
@@ -957,6 +983,7 @@ that path draws the content but needs an explicit size, since there is no window
 | `PopoverTheme.swift` | Settings › Appearance: theme, glass, the resolved look, the popover and window backdrops. |
 | `ColorPickerPage.swift` | Inline hue/sat colour wheel page + shared `BackButton`. |
 | `ButtonRemapper.swift` | CGEvent tap, action model (`RemapAction`, `GestureBindings`, `GestureSlot`), presets, gesture holds, the DPI button's F20 bridge, persistence, Accessibility. |
+| `GestureDebugLog.swift` | Hidden `gestureDebugLog` default: a trace of gesture holds, F20 timing and pointer deltas in `~/Library/Logs/MacRazer MX/gesture.log` (fork). |
 | `GestureRecognizer.swift` | `GestureDirection` and the pure `GestureRecognizer`: net movement of one hold to at most one swipe (fork). |
 | `RemapView.swift` | Button-config UI (inline + window), gesture editor, DPI button section, key recorder. |
 | `RemapWindowController.swift` | Standalone window host for the remap UI. |

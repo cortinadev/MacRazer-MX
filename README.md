@@ -28,9 +28,9 @@
 >   have to be granted to it again.
 > - **No published releases.** You build it from source (see [Build and run](#build-and-run)).
 >
-> The gesture and DPI button features have so far been exercised by unit tests only. The DPI
-> button remap is enabled for the Cobra HyperSpeed over Bluetooth but **not yet confirmed on
-> real hardware** (details [below](#the-dpi-button)).
+> The gesture and DPI button features were first exercised by unit tests only. The DPI button
+> remap has since been tested on a real Cobra HyperSpeed over Bluetooth (details
+> [below](#the-dpi-button)). The side-button gesture has not been tried on hardware beyond that.
 
 A native menu bar app to control Razer mice on macOS. Razer does ship a Synapse for Mac now,
 but its [supported-device list](https://mysupport.razer.com/app/answers/detail/a_id/14809/~/razer-synapse-for-mac-supported-and-compatible-devices)
@@ -80,8 +80,7 @@ Razer mice that use the same HID protocol family, but those are untested, so tre
   app (Mac Mouse Fix, SteerMouse, BetterMouse) takes the side buttons' clicks first, the page
   names it so you know which one to quit.
 - **DPI button remap** over Bluetooth on the Basilisk V3 X HyperSpeed and the Cobra HyperSpeed
-  (the Cobra's is not yet confirmed on hardware): any action, a gesture included, or back to
-  DPI Cycle. See [The DPI button](#the-dpi-button).
+  (tested on a real Cobra): any action, a gesture included, or back to DPI Cycle. See [The DPI button](#the-dpi-button).
 - **Reverse scrolling on Razer mice**, under Settings › General. Reverses wheel and tilt
   scrolling on Razer mice while trackpads and other mice keep their directions. Off by
   default and saved once for the app. Requires Accessibility and MacRazer running; it does
@@ -144,7 +143,9 @@ goes to two columns. Each device gets a card, and a keyboard can follow the mous
 
 The table is upstream's, built from reports sent to upstream. "Maintainer" means SorcRR, and
 nothing here has been re-verified for MacRazer MX. Its two additions, gestures and the DPI
-button remap, are not in this table: they have only been exercised by unit tests.
+button remap, are not in this table. The DPI button remap has been tried on one real Cobra
+HyperSpeed over Bluetooth (see [The DPI button](#the-dpi-button)); gestures are otherwise
+covered by unit tests.
 
 "Verified" below means someone ran the CLI probes or the in-app test against the mouse and
 posted the output, not that the protocol tables say it should work. Where nobody has, the row
@@ -313,11 +314,11 @@ Bluetooth. MacRazer MX enables the same for the **Razer Cobra HyperSpeed over Bl
 lets the DPI button take any action, **Gesture…** included. It's a section of Configure Buttons
 that only appears for a mouse on Bluetooth that supports it.
 
-**Not yet confirmed on real hardware.** On the Basilisk V3 X this is upstream's tested
-behaviour. On the Cobra HyperSpeed it is switched on, and so far only checked by unit tests:
-nobody has yet confirmed on a real Cobra that entry `0x60` of its button table is the DPI
-button. MacRazer MX is built to fail safe, as described below, but treat it as experimental
-there, and please report what you see in an issue.
+**Tested on a real Cobra.** On the Basilisk V3 X this is upstream's tested behaviour. On the
+Cobra HyperSpeed over Bluetooth it has been confirmed on hardware: the mouse accepts entry
+`0x60` of its button table as the DPI button, the read before the write and the read back
+work, and the F20 binding reaches macOS. The Basilisk V3 X HyperSpeed's gesture behaviour
+below is not verified. Please report what you see in an issue.
 
 How it works:
 
@@ -335,8 +336,21 @@ How it works:
   it reads the entry back and reports a failure if it differs. **DPI Cycle (default)** writes
   the factory function back. The write goes to the mouse's onboard profile 1, so the app only
   writes while the mouse is on that profile and asks you to switch to it otherwise.
-- A **DPI-button gesture** is driven by F20 going down and up, plus the pointer's movement. Its
-  Click slot starts as **None**, because software can't cycle the DPI.
+- A **DPI-button gesture on the Cobra is "click, then swipe", not "hold and swipe".** The
+  Cobra's firmware only acts on the release of a short press of the DPI button, whatever
+  function is programmed (a key or a mouse button). The app sees F20 go down and up about 50 ms
+  apart however long you held the button, and a long hold often sends nothing, so holding is
+  not possible on this button. Instead, click the DPI button: that opens a 0.6 second window.
+  Move the pointer 50 points in a direction during it and that direction's action runs at once,
+  while you are still moving. If the window passes with no swipe, the **Click** slot's action
+  runs. Click starts as **None**, because software can't cycle the DPI. Ordinary buttons (the
+  side buttons, the wheel click) keep true hold and swipe. A mouse flagged otherwise, the
+  Basilisk V3 X HyperSpeed (not verified), keeps the hold behaviour for the DPI button.
+- **Gesture trace.** If a gesture misbehaves, run
+  `defaults write com.cortinadev.macrazer-mx gestureDebugLog -bool true` and relaunch. The app
+  then writes a trace of gesture holds, F20 timing and pointer movement (never typed text) to
+  `~/Library/Logs/MacRazer MX/gesture.log`. Attach it to an issue. Turn it off with
+  `defaults delete com.cortinadev.macrazer-mx gestureDebugLog`.
 - **Not supported:** the USB cable and the 2.4 GHz dongle. There the firmware handles the DPI
   button onboard, and the command to rewrite it over USB isn't implemented.
 
