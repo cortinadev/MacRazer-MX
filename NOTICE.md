@@ -33,6 +33,16 @@ The fork's own research credit:
  [InstantSpaceSwitcher](https://github.com/jurplel/InstantSpaceSwitcher) by
  **[@jurplel](https://github.com/jurplel)** confirmed their direction. The gesture swipes that
  follow the pointer are implemented here from that format; no code from either is bundled.
+- **Device mode and private keys over Bluetooth:** that a Razer mouse in driver mode reports its
+  DPI button as "private keys" in HID report 4 comes from
+  [OpenRazer](https://github.com/openrazer/openrazer); the Bluetooth key that reads and sets the
+  device mode, and the key codes, were learned from the protocol notes of
+  [OpenSnek](https://github.com/gh123man/OpenSnek) by
+  **[@gh123man](https://github.com/gh123man)**,
+  [OpenSynapse](https://github.com/A1mAssist/OpenSynapse) and
+  [ergo-control](https://github.com/serafinski/ergo-control) by
+  **[@serafinski](https://github.com/serafinski)**, then confirmed on a Cobra HyperSpeed. The
+  DPI button's hold and swipe is implemented here from those facts; no code from them is bundled.
 
 The attributions below are upstream's, kept as they were, and so are the About window's credits.
 
