@@ -125,43 +125,46 @@ final class IssueReportTests: XCTestCase {
         XCTAssertFalse(m.canSend)
     }
 
-    func testEveryFailureOffersTheContactAddress() {
+    /// The fork's GitHub issues, where upstream gives its maintainer's email address.
+    func testEveryFailureOffersTheForksIssues() {
+        XCTAssertEqual(ProjectLinks.contact, "github.com/cortinadev/MacRazer-MX/issues")
         for outcome in [DeviceReportSender.Outcome.tooMany, .refused, .unavailable] {
-            XCTAssertTrue(DeviceTestView.sendFailure(outcome).contains("Copy and email the report to contact@macrazer.com"))
-            XCTAssertTrue(DeviceTestView.sendFailure(outcome, emailHint: "email us at contact@macrazer.com")
-                .hasSuffix("or email us at contact@macrazer.com."))
+            XCTAssertTrue(DeviceTestView.sendFailure(outcome)
+                .contains("Copy and paste the report into a new issue at github.com/cortinadev/MacRazer-MX/issues"))
+            XCTAssertTrue(DeviceTestView.sendFailure(outcome, emailHint: "report it at \(ProjectLinks.contact)")
+                .hasSuffix("report it at github.com/cortinadev/MacRazer-MX/issues."))
+            XCTAssertFalse(DeviceTestView.sendFailure(outcome).contains("@"), "no email address to write to")
         }
         XCTAssertTrue(DeviceTestView.sendFailure(.unavailable).contains("internet connection"))
         XCTAssertTrue(DeviceTestView.sendFailure(.tooMany).contains("too many from here today"))
     }
 
-    func testTheEmailInsteadCarriesTheReportButNotTheNameOrAddress() throws {
+    func testTheIssueInsteadCarriesTheReportButNotTheNameOrAddress() throws {
         let m = model()
         m.description = "It crashes & burns\nafter sleep"
         m.name = "Sam"
         m.replyEmail = "person@example.com"
-        let url = m.mailInstead
-        XCTAssertEqual(url.scheme, "mailto")
+        let url = m.issueInstead
+        XCTAssertTrue(url.absoluteString.hasPrefix("https://github.com/cortinadev/MacRazer-MX/issues/new?"))
         let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        XCTAssertEqual(components.path, "contact@macrazer.com")
         let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-        XCTAssertEqual(query["subject"], "MacRazer issue: It crashes & burns")
+        XCTAssertEqual(query["title"], "MacRazer issue: It crashes & burns")
         XCTAssertTrue(query["body"]?.hasPrefix("It crashes & burns\nafter sleep\n\nMacRazer 0.8.0 on macOS 26.1") == true)
         XCTAssertFalse(url.absoluteString.contains("person"))
         XCTAssertFalse(url.absoluteString.contains("Sam"))
     }
 
-    func testALongMailLinkIsCutToFitAfterEncoding() throws {
+    func testALongIssueLinkIsCutToFitAfterEncoding() throws {
         // Quotes, braces and line breaks each take three characters once encoded.
         let body = String(repeating: "{\"a\": [1, 2]}\n", count: 2000)
-        let url = ProjectLinks.mail(subject: "Test", body: body)
-        XCTAssertLessThanOrEqual(url.absoluteString.count, ProjectLinks.maxMailLink)
+        let url = ProjectLinks.newIssue(title: "Test", body: body)
+        XCTAssertLessThanOrEqual(url.absoluteString.count, ProjectLinks.maxContactLink)
         let sent = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first { $0.name == "body" }?.value)
         XCTAssertTrue(sent.hasSuffix("\n\n(cut short)"))
         XCTAssertTrue(body.hasPrefix(String(sent.dropLast("\n\n(cut short)".count))))
         XCTAssertGreaterThan(sent.count, 1000, "cut to fit, not to nothing")
-        let short = ProjectLinks.mail(subject: "Test", body: "Hello")
+        let short = ProjectLinks.newIssue(title: "Test", body: "Hello")
         XCTAssertFalse(short.absoluteString.contains("cut"))
     }
 

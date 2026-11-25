@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package "MacRazer.app" into a drag-to-install DMG for distribution.
+# Package "MacRazer MX.app" into a drag-to-install DMG for distribution.
 #
 #   ./Scripts/make-dmg.sh            # builds the app, then writes ./dist/MacRazer.dmg
 #                                     # plus a versioned copy, e.g. ./dist/MacRazer-0.1.5.dmg
@@ -19,8 +19,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP="MacRazer.app"
-VOLNAME="MacRazer"
+# The name build-app.sh gives the bundle. The DMG keeps upstream's file name below: it has no
+# space to quote, and it is the name `ProjectLinks.dmg(forVersion:tag:)` asks the fork for.
+APP="MacRazer MX.app"
+VOLNAME="MacRazer MX"
 OUT_DIR="dist"
 OUT_DMG="${OUT_DIR}/MacRazer.dmg"
 

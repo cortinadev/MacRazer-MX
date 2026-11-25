@@ -98,6 +98,8 @@ final class CrashReportParserTests: XCTestCase {
 
     func testRefusesOtherAppsAndOtherReports() {
         XCTAssertNil(CrashReportParser.parse(CrashFixture.ips(bundleID: "com.example.other")))
+        XCTAssertNil(CrashReportParser.parse(CrashFixture.ips(bundleID: "com.macrazer.menubar")),
+                     "upstream's MacRazer, installed alongside, crashes under the same process name")
         XCTAssertNil(CrashReportParser.parse(CrashFixture.ips(bundleID: nil)), "a swift run build")
         XCTAssertNil(CrashReportParser.parse(CrashFixture.ips(bugType: "288")), "a hang, not a crash")
         XCTAssertNil(CrashReportParser.parse(Data("not a report".utf8)))
@@ -311,13 +313,13 @@ final class CrashReportModelTests: XCTestCase {
         guard case .failed(let message) = m.state else { return XCTFail("\(m.state)") }
         XCTAssertTrue(m.canSend)
         XCTAssertTrue(message.contains("internet connection"))
-        XCTAssertTrue(message.hasSuffix("email it to us at contact@macrazer.com."))
+        XCTAssertTrue(message.hasSuffix("report it at github.com/cortinadev/MacRazer-MX/issues."))
     }
 
     func testRefusedDoesNotPointToAGitHubButtonThisWindowLacks() {
         let message = CrashReportModel.sendFailure(.refused)
         XCTAssertFalse(message.contains("GitHub"))
-        XCTAssertTrue(message.hasSuffix("You can still email it to us at contact@macrazer.com."))
+        XCTAssertTrue(message.hasSuffix("You can still report it at github.com/cortinadev/MacRazer-MX/issues."))
         XCTAssertTrue(DeviceTestView.sendFailure(.refused).contains("Open a GitHub issue"))
     }
 
@@ -329,16 +331,19 @@ final class CrashReportModelTests: XCTestCase {
         XCTAssertTrue(CrashReportModel.sendFailure(.tooMany).contains("too many from here today"))
     }
 
-    func testTheEmailInsteadCarriesTheReportAndTheComment() throws {
+    /// MacRazer MX sends people to its own GitHub issues where upstream gives an email address.
+    func testTheIssueInsteadCarriesTheReportAndTheCommentButNotTheAddress() throws {
         let m = model()
         m.comment = "Opened the popover"
         m.replyEmail = "person@example.com"
-        let components = try XCTUnwrap(URLComponents(url: m.mailInstead, resolvingAgainstBaseURL: false))
-        XCTAssertEqual(components.scheme, "mailto")
-        XCTAssertEqual(components.path, "contact@macrazer.com")
+        let components = try XCTUnwrap(URLComponents(url: m.issueInstead, resolvingAgainstBaseURL: false))
+        XCTAssertEqual(components.scheme, "https")
+        XCTAssertEqual(components.host, "github.com")
+        XCTAssertEqual(components.path, "/cortinadev/MacRazer-MX/issues/new")
         let body = try XCTUnwrap(components.queryItems?.first { $0.name == "body" }?.value)
         XCTAssertTrue(body.hasPrefix("Opened the popover\n\n{"))
-        XCTAssertLessThanOrEqual(m.mailInstead.absoluteString.count, ProjectLinks.maxMailLink)
+        XCTAssertFalse(m.issueInstead.absoluteString.contains("person"), "an issue is public")
+        XCTAssertLessThanOrEqual(m.issueInstead.absoluteString.count, ProjectLinks.maxContactLink)
     }
 
     func testWhereItCrashedIsTheFirstFrameInOurOwnCode() {

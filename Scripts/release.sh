@@ -108,12 +108,9 @@ version_gt() {
 version_gt "${VERSION}" "${CURRENT}" \
     || fail "${VERSION} is not newer than the current ${CURRENT}; the updater would refuse it"
 
-# A release without the Worker would ship with Send and the usage stats hidden, which only
-# shows once people have it. Checked here, before anything is edited or built.
-WORKER_DOMAIN="$(./Scripts/worker-domain.sh)" || fail "fix DOMAIN in your settings file first"
-if [ -z "${WORKER_DOMAIN}" ] && [ "${MACRAZER_RELEASE_WITHOUT_WORKER:-0}" != "1" ]; then
-    fail "no Worker address (DOMAIN in ~/.config/macrazer-reports/settings.env), so Send and usage stats would be hidden. The Worker is maintainer-only (setup in the private SorcRR/macrazer-worker repo); anyone else releasing a build should re-run with MACRAZER_RELEASE_WITHOUT_WORKER=1"
-fi
+# No Worker check: upstream refuses to release without its maintainer's Worker address, but
+# MacRazer MX never has one (build-app.sh writes none, and `WorkerEndpoint.base` is always nil),
+# so Send and the usage stats are hidden in every release by design.
 
 [ -z "$(git status --porcelain)" ] \
     || fail "working tree is dirty — commit or stash first, so the release diff is only the release"
@@ -198,16 +195,9 @@ MACRAZER_RELEASE_BUILD=1 ./Scripts/make-dmg.sh
 # --- Verify -------------------------------------------------------------------------------
 # The point of the whole script: prove the artifact actually carries the version being tagged.
 
-BUILT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' MacRazer.app/Contents/Info.plist)"
+BUILT="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "MacRazer MX.app/Contents/Info.plist")"
 [ "${BUILT}" = "${VERSION}" ] \
     || fail "built app reports ${BUILT}, not ${VERSION} — do not tag this"
-
-# And the build really carries it, the way the checks above know the version is right.
-if [ -n "${WORKER_DOMAIN}" ]; then
-    WORKER="$(/usr/libexec/PlistBuddy -c 'Print :MacRazerWorkerURL' MacRazer.app/Contents/Info.plist 2>/dev/null || true)"
-    [ "${WORKER}" = "https://${WORKER_DOMAIN}" ] \
-        || fail "built app's Worker address is '${WORKER}', not https://${WORKER_DOMAIN}; do not tag this"
-fi
 
 for asset in "dist/MacRazer.dmg" "dist/MacRazer-${VERSION}.dmg"; do
     [ -f "${asset}" ] || fail "expected ${asset} — make-dmg.sh did not produce it"

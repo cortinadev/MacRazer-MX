@@ -194,8 +194,8 @@ cat <<EOF
 
 ### Install
 This build is unsigned (no paid Apple Developer ID), so the first time you open it macOS says
-"MacRazer Not Opened". Click **Done**, then go to System Settings › Privacy & Security, scroll
-down and click **Open Anyway**. Or run \`xattr -cr /Applications/MacRazer.app\` in Terminal.
+"MacRazer MX Not Opened". Click **Done**, then go to System Settings › Privacy & Security, scroll
+down and click **Open Anyway**. Or run \`xattr -cr "/Applications/MacRazer MX.app"\` in Terminal.
 Only needed once. See the [README](https://github.com/${REPO}#install) for details. A paid
 Apple Developer ID (\$99 a year) would remove this step; tips toward it go to
 [ko-fi.com/sorcrr](https://ko-fi.com/sorcrr).

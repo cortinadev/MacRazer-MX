@@ -10,6 +10,24 @@ affiliation or endorsement is implied.
 This project is licensed under the **GNU General Public License v2.0** (see [`LICENSE`](LICENSE)).
 It is GPL because it is derived from OpenRazer (see below).
 
+## MacRazer MX, a modified fork
+**MacRazer MX** is a fork of **[MacRazer](https://github.com/SorcRR/MacRazer)** by
+**[SorcRR](https://github.com/SorcRR)**, modified by **[cortinadev](https://github.com/cortinadev)**
+starting 2026-11-25. Its source is at
+[cortinadev/MacRazer-MX](https://github.com/cortinadev/MacRazer-MX). What it changes:
+- **Button remapping:** a gesture mode, and remapping of the DPI buttons.
+- **Its own identity**, so it can be installed next to MacRazer without either touching the
+ other: the name "MacRazer MX", the bundle ID `com.cortinadev.macrazer-mx`, and its own
+ Application Support folder.
+- **No update checks.** The fork publishes no release feed of its own, and must never offer
+ upstream's releases, so the update checker is switched off and its menu item, Settings page
+ and cards are hidden.
+- **No report server.** The app never contacts upstream's private report server (the
+ "Worker"), so Send and the usage stats are off in every build. Where a report can't be sent,
+ the app points to the fork's GitHub issues instead of upstream's email address.
+
+The attributions below are upstream's, kept as they were, and so are the About window's credits.
+
 ## Attribution
 - **[OpenRazer](https://github.com/openrazer/openrazer)** (GPL-2.0-or-later), the device
  HID protocol implemented here (command bytes, the `razer_report` structure, CRC, the
@@ -31,7 +49,7 @@ It is GPL because it is derived from OpenRazer (see below).
  reversal is implemented here using the system interfaces; no Scroll Reverser code is bundled.
 - Hardware findings unique to this project (e.g. brightness living on the LOGO LED, the
  31 ms request/response timing on macOS) were verified on real hardware and are documented
- in [`docs/DOCUMENTATION.md`](docs/DOCUMENTATION.md).
+ in [`Documentation/DOCUMENTATION.md`](Documentation/DOCUMENTATION.md).
 
 ## Disclaimer
 Provided "as is", without warranty of any kind. It communicates with your mouse over HID;

@@ -358,6 +358,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         // last one recorded and then records the new one, so it has to happen exactly once per
         // launch and before anything else can write that key.
         updateChecker.loadInstalledVersionState()
+        // With updates off (`AppInfo.updatesEnabled`) there is no update to announce and no
+        // release feed to fill the notes, so a new version is recorded and its card waved away
+        // here rather than shown. Dismissed, not skipped, so the version bookkeeping stays right.
+        if !AppInfo.updatesEnabled { updateChecker.dismissAnnouncement() }
         // First launch on a new version: say the update worked, with what it brought. Only
         // takes focus when the user asked for the install; an automatic one finishes while
         // they are doing something else.
@@ -375,8 +379,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
             self?.crashReportWindow.offerNewCrash()
         }
         // Unthrottled: a launch is rare, and it is when someone who just installed or reopened
-        // the app most expects it to know about the latest release.
-        Task { await updateChecker.checkForUpdatesNow() }
+        // the app most expects it to know about the latest release. Never while updates are off.
+        if AppInfo.updatesEnabled { Task { await updateChecker.checkForUpdatesNow() } }
         startUpdateTriggers()
     }
 
@@ -393,9 +397,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
     }
 
     /// The update check and the support list, each behind its own throttle, and a mouse count
-    /// or answer that hasn't gone out today.
+    /// or answer that hasn't gone out today. The update check only while updates are on: the
+    /// triggers stay for the other two, which do nothing without a Worker.
     private func checkOnlineIfDue() {
-        Task { await updateChecker.checkForUpdatesIfDue() }
+        if AppInfo.updatesEnabled { Task { await updateChecker.checkForUpdatesIfDue() } }
         Task { await supportList.refreshIfDue() }
         Task { await countReporter.reportIfNeeded() }
     }
@@ -572,10 +577,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         menu.addItem(settings)
 
         // The background check runs every few hours; this is the way to ask for one now, and it
-        // also un-dismisses a version the user waved away earlier.
-        let update = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
-        update.target = self
-        menu.addItem(update)
+        // also un-dismisses a version the user waved away earlier. Not there while updates are
+        // off: it would ask a release feed the fork doesn't publish.
+        if AppInfo.updatesEnabled {
+            let update = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+            update.target = self
+            menu.addItem(update)
+        }
 
         // Always there: a problem worth reporting is often that no mouse shows up.
         let report = NSMenuItem(title: "Report an Issue…", action: #selector(openIssueReport), keyEquivalent: "")

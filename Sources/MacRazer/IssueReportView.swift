@@ -39,9 +39,9 @@ struct IssueReportView: View {
             switch model.sendState {
             case .sending: reportRunning("Sending…")
             case .failed(let outcome):
-                // The email starts with what they wrote, so nothing has to be typed again.
-                reportSendFailure(DeviceTestView.sendFailure(outcome, emailHint: "email us at \(ProjectLinks.contactEmail)"),
-                                  mail: model.mailInstead)
+                // The issue starts with what they wrote, so nothing has to be typed again.
+                reportSendFailure(DeviceTestView.sendFailure(outcome, emailHint: "report it at \(ProjectLinks.contact)"),
+                                  link: model.issueInstead)
             case .idle, .sent: EmptyView()
             }
         }

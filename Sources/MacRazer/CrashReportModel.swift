@@ -55,17 +55,20 @@ final class CrashReportModel: ObservableObject {
     }
 
     /// What the window says when Send fails, as the other report windows say it. This one
-    /// has no GitHub button, so it doesn't point to one.
+    /// has no GitHub button, so it doesn't point to one; it names the fork's issues page.
     static func sendFailure(_ outcome: DeviceReportSender.Outcome) -> String {
-        DeviceTestView.sendFailure(outcome, emailHint: "email it to us at \(ProjectLinks.contactEmail)",
+        DeviceTestView.sendFailure(outcome, emailHint: "report it at \(ProjectLinks.contact)",
                                    offersGitHub: false)
     }
-    /// An email with the report in it, for when Send fails: what they wrote, then the report
-    /// shown in the window. `ProjectLinks.mail` cuts it short if the link would be too long.
-    var mailInstead: URL {
-        let report = finalReport()
+    /// A new GitHub issue with the report in it, for when Send fails: what they wrote, then the
+    /// report shown in the window. Without the reply address: an issue is public, and the
+    /// address was offered for Send alone. `ProjectLinks.newIssue` cuts it short if the link
+    /// would be too long.
+    var issueInstead: URL {
+        var report = finalReport()
+        report.replyEmail = nil
         let body = (report.comment.map { $0 + "\n\n" } ?? "") + CrashReportOutput.json(report)
-        return ProjectLinks.mail(subject: "MacRazer crash report: \(report.appVersion)", body: body)
+        return ProjectLinks.newIssue(title: "MacRazer crash report: \(report.appVersion)", body: body)
     }
 
     // MARK: Summary

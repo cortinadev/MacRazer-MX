@@ -93,9 +93,12 @@ struct SettingsView: View {
         }
     }
 
-    /// Privacy only exists in a build that can send stats: see `WorkerEndpoint`.
+    /// Privacy only exists in a build that can send stats: see `WorkerEndpoint`. Updates only
+    /// while updates are on: see `AppInfo.updatesEnabled`.
     private var panes: [SettingsPane] {
-        SettingsPane.allCases.filter { $0 != .privacy || usageStats.isAvailable }
+        SettingsPane.allCases.filter {
+            ($0 != .privacy || usageStats.isAvailable) && ($0 != .updates || AppInfo.updatesEnabled)
+        }
     }
 
     /// The page actually shown: one the sidebar lists, so a `pane` passed in for a page this
@@ -237,6 +240,9 @@ struct SettingsView: View {
                     Text("\(latest) is available")
                 }
                 .foregroundStyle(Color.razerGreenText)
+            } else if !AppInfo.updatesEnabled {
+                // "Up to date" would be a claim nothing checked.
+                Text("Update checks are off").foregroundStyle(.secondary)
             } else {
                 Text("Up to date").foregroundStyle(.secondary)
             }

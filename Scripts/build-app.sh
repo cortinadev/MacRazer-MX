@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build a standalone "MacRazer.app" menu bar bundle from the SwiftPM executable.
+# Build a standalone "MacRazer MX.app" menu bar bundle from the SwiftPM executable.
 #
-#   ./Scripts/build-app.sh           # optimised build → ./MacRazer.app, versioned <version>-dev
+#   ./Scripts/build-app.sh           # optimised build → "./MacRazer MX.app", versioned <version>-dev
 #   MACRAZER_RELEASE_BUILD=1 ./Scripts/build-app.sh   # the plain version, as release.sh does
-#   open "MacRazer.app"           # launch it
+#   open "MacRazer MX.app"        # launch it
 #
 # Needs Xcode, not just the Command Line Tools: a build for two architectures goes through
 # Xcode's build system. (`swift build` / `swift run` for development work with either.)
@@ -15,7 +15,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-APP="MacRazer.app"
+# The fork's own name, so it installs next to upstream's MacRazer.app rather than over it. The
+# executable keeps upstream's name: SwiftPM builds it from the `MacRazer` target, and keeping
+# that target as it is keeps upstream merges simple. The space means every use is quoted.
+APP="MacRazer MX.app"
 EXEC_NAME="MacRazer"
 
 # Universal: one binary for Apple Silicon and Intel. Nothing in the app is tied to either, and
@@ -50,19 +53,11 @@ if [ "${MACRAZER_RELEASE_BUILD:-0}" != "1" ]; then
 fi
 [ -f Packaging/AppIcon.icns ] && cp Packaging/AppIcon.icns "${APP}/Contents/Resources/AppIcon.icns"
 
-# The Worker behind Send and the usage stats. Its address comes from DOMAIN in the private
-# settings file the Worker's README sets up (SorcRR/macrazer-worker, private), never from the repository, so a build from anyone
-# else's checkout has no Worker: those features are hidden and nothing is sent anywhere.
-# See `WorkerEndpoint` in Sources/MacRazer/AppInfo.swift.
-WORKER_DOMAIN="$(./Scripts/worker-domain.sh)"
-if [ -n "${WORKER_DOMAIN}" ]; then
-    # Delete first: Add refuses a key that's already there.
-    /usr/libexec/PlistBuddy -c "Delete :MacRazerWorkerURL" "${APP}/Contents/Info.plist" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Add :MacRazerWorkerURL string https://${WORKER_DOMAIN}" "${APP}/Contents/Info.plist"
-    echo "▸ Worker: https://${WORKER_DOMAIN} (Send and usage stats on)"
-else
-    echo "▸ No Worker configured, so Send and usage stats are hidden in this build."
-fi
+# No Worker address goes into the bundle. Upstream writes MacRazerWorkerURL here from its
+# maintainer's private settings; MacRazer MX never talks to that server, and the app ignores the
+# key anyway (`WorkerEndpoint.base` in Sources/MacRazer/AppInfo.swift is always nil). So Send
+# and the usage stats are hidden in every build, and nothing is sent anywhere.
+echo "▸ No Worker in MacRazer MX, so Send and usage stats are hidden."
 
 # Prefer a stable self-signed identity (created by Scripts/setup-signing.sh) so the
 # Input Monitoring grant persists across rebuilds. Fall back to ad-hoc otherwise.
@@ -84,7 +79,7 @@ if security find-identity -p codesigning 2>/dev/null | grep -q "${SIGN_ID}"; the
     # is the exact situation this watchdog exists for. `:-` because the trap is script-wide
     # and `set -u` would fire on the ad-hoc branch, where DONE_FLAG is never set.
     trap 'rm -f "${DONE_FLAG:-}"' EXIT
-    codesign --force --sign "${SIGN_ID}" --identifier com.macrazer.menubar --timestamp=none "${APP}" &
+    codesign --force --sign "${SIGN_ID}" --identifier com.cortinadev.macrazer-mx --timestamp=none "${APP}" &
     CODESIGN_PID=$!
     (
         # Polled in short steps rather than one `sleep 5`: killing the watchdog while it sits
@@ -114,7 +109,7 @@ if security find-identity -p codesigning 2>/dev/null | grep -q "${SIGN_ID}"; the
     fi
 else
     echo "▸ Ad-hoc codesigning (run Scripts/setup-signing.sh for a stable identity)…"
-    codesign --force --sign - --identifier com.macrazer.menubar --timestamp=none "${APP}"
+    codesign --force --sign - --identifier com.cortinadev.macrazer-mx --timestamp=none "${APP}"
 fi
 
 echo "✓ Built ${APP}"
