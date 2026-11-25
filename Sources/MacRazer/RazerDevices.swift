@@ -118,6 +118,16 @@ struct RazerDeviceInfo {
     /// (`BLEProtocol.Key.dpiButtonGet`). Firmware functions are written there, and any other
     /// action makes the button type F20 for `ButtonRemapper` to turn into it.
     var supportsDpiButtonBinding = false
+    /// The firmware acts on the DPI button only when a short press is released, whatever
+    /// function entry 0x60 holds (a key, a mouse button). Seen on a Cobra HyperSpeed over
+    /// Bluetooth with `GestureDebugLog`: it takes the F20 binding, but F20 comes as a key-down
+    /// and key-up about 50 ms apart however long the button was held, and a long hold often
+    /// sends nothing at all. So no hold of the button can be seen, and a DPI-button gesture is
+    /// "click, then swipe" there: F20 opens a short window for the swipe
+    /// (`ButtonRemapper.latchedGestureWindow`), and Click runs if none comes. This is what the
+    /// hardware does, not what the protocol suggests, and the hardware wins: set only for a
+    /// mouse seen doing it.
+    var dpiButtonActsOnRelease = false
     /// The Basilisk V3 X's Multi-function (HyperShift) trigger, an onboard modifier its
     /// Bluetooth firmware doesn't let anything remap. The Buttons page says so.
     var hasMultiFunctionTrigger = false
@@ -194,15 +204,19 @@ enum RazerDevices {
         // Over Bluetooth (vendor 0x068E). Hardware-verified with this app: battery, serial,
         // DPI stages and brightness on LOGO_LED, the same LED as over USB. Transaction ids
         // don't apply: BLE frames carry their own request id.
-        // The DPI button binding is enabled pending confirmation on hardware: the function
-        // table answers here (entries 0x04 and 0x05, `SideButtonReset`), but entry 0x60 has
-        // not been confirmed as the DPI button on a Cobra yet, only on the Basilisk V3 X.
-        // Every write reads 0x60 first and goes ahead only when it reads as the DPI button
-        // (`BLEProtocol.parseDpiButtonBinding`, `BluetoothDevice.writeDpiCycleBinding`).
-        .init(pid: 0x00DC, name: "Razer Cobra HyperSpeed (Bluetooth)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .bluetooth, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed", supportsDpiButtonBinding: true, detectsOnboardSideButtonRemaps: true),
+        // The DPI button binding: the function table answers here (entries 0x04 and 0x05,
+        // `SideButtonReset`), and entry 0x60 took the F20 binding on a Cobra, whose DPI button
+        // then typed F20. Every write reads 0x60 first and goes ahead only when it reads as
+        // the DPI button (`BLEProtocol.parseDpiButtonBinding`, `BluetoothDevice.writeDpiCycleBinding`).
+        // The button only sends anything when a short press is released, so its gesture is
+        // click, then swipe (`dpiButtonActsOnRelease`).
+        .init(pid: 0x00DC, name: "Razer Cobra HyperSpeed (Bluetooth)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .bluetooth, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed", supportsDpiButtonBinding: true, dpiButtonActsOnRelease: true, detectsOnboardSideButtonRemaps: true),
         // Basilisk V3 X HyperSpeed over Bluetooth. The shared BLE layer covers battery, DPI,
         // stages and static lighting; the DPI Cycle assignment is handled by BluetoothDevice.
         // Its only lit zone is the scroll wheel, so brightness must target SCROLL_LED.
+        // Its DPI button keeps the hold gesture (no `dpiButtonActsOnRelease`). Unverified
+        // either way: nobody has checked on this mouse whether F20 follows the button's
+        // press and release or only comes as a pulse when a short press is released.
         .init(pid: 0x00BA, name: "Razer Basilisk V3 X HyperSpeed (Bluetooth)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 18000, transactionId: 0x1f, matrixTransactionId: 0x1f, brightnessLed: Razer.scrollLed, connection: .bluetooth, silhouette: .cobra, dischargeCurveModelKey: nil, supportsDpiButtonBinding: true, hasMultiFunctionTrigger: true, supportsSleepTimeout: true, supportsStageEditing: true, verifiesBrightnessWrite: true),
         // Basilisk V3 Pro 35K over Bluetooth (two in-app reports on 0.7.0, no credit given). The
         // Bluetooth test is read-only: battery answered (99%), and so did the DPI stages read
@@ -1049,6 +1063,8 @@ enum RazerDevices {
     static func canCharge(pid: Int) -> Bool { info(pid: pid)?.canCharge ?? true }
     static func maxDPI(pid: Int) -> Int { info(pid: pid)?.maxDPI ?? 26000 }
     static func supportsDpiButtonBinding(pid: Int) -> Bool { info(pid: pid)?.supportsDpiButtonBinding ?? false }
+    /// False for an unknown mouse: the hold gesture until one is seen pulsing F20.
+    static func dpiButtonActsOnRelease(pid: Int) -> Bool { info(pid: pid)?.dpiButtonActsOnRelease ?? false }
     static func hasMultiFunctionTrigger(pid: Int) -> Bool { info(pid: pid)?.hasMultiFunctionTrigger ?? false }
     static func supportsSleepTimeout(pid: Int) -> Bool { info(pid: pid)?.supportsSleepTimeout ?? false }
     static func detectsOnboardSideButtonRemaps(pid: Int) -> Bool { info(pid: pid)?.detectsOnboardSideButtonRemaps ?? false }

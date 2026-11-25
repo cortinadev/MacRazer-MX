@@ -168,11 +168,18 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     private var dpiObservers = Set<AnyCancellable>()
     private let defaults: UserDefaults
     private let actionEmitter: ((RemapAction) -> Void)?
+    /// Seconds on a monotonic clock, for a latched hold's window. Tests pass their own, so
+    /// the window can pass without waiting for it.
+    private let clock: () -> TimeInterval
 
-    init(defaults: UserDefaults = .standard, actionEmitter: ((RemapAction) -> Void)? = nil) {
+    init(defaults: UserDefaults = .standard, actionEmitter: ((RemapAction) -> Void)? = nil,
+         clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults
         self.actionEmitter = actionEmitter
+        self.clock = clock
     }
+
+    deinit { latchTimer?.invalidate() }
 
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -187,9 +194,31 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         let trigger: Int
         let bindings: GestureBindings
         var recognizer = GestureRecognizer()
+        /// Set for a latched hold: the DPI button of a mouse that only reports a click
+        /// (`dpiButtonActsOnRelease`). No release ends it: its swipe does, or this time on
+        /// `clock` passing, which fires its click. Nil for a hold its button's release ends.
+        var latchDeadline: TimeInterval? = nil
     }
     /// The hold in progress, if any. One at a time: a new press ends it.
-    private(set) var gestureHold: GestureHold?
+    ///
+    /// Whatever ends or replaces a latched hold stops its timer here, so every reset that
+    /// sets this to nil (the tap switched off or removed, a device change, pausing, waking,
+    /// the F20 assignment no longer confirmed, the action changing, a mouse button's press)
+    /// stops it too. Cheap enough for the pointer's rate: a hold mutated in place goes by
+    /// two nil checks, and with no latched hold the first is enough.
+    private(set) var gestureHold: GestureHold? {
+        didSet { if latchTimer != nil, gestureHold?.latchDeadline == nil { cancelLatchTimer() } }
+    }
+    /// How long a latched hold of the DPI button waits for its swipe after the F20 pulse.
+    /// Long enough to start moving after the click, short enough that Click, which runs when
+    /// it ends without one, doesn't feel late.
+    static let latchedGestureWindow: TimeInterval = 0.6
+    /// Ends a latched hold when its window is over and the pointer has stopped moving, so no
+    /// move would notice (`expireLatchedGesture`). On the main run loop, as the tap is. Nil
+    /// with no latched hold. Readable so tests can see it waiting and fire it.
+    private(set) var latchTimer: Timer?
+    /// Pointer events fed to the hold in progress, for `GestureDebugLog` only.
+    private var debugMoveCount = 0
     /// Per-device key so each mouse keeps its own remaps.
     private var activeKey = "none"
     private var activeDeviceID: Int?
@@ -200,6 +229,12 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// (`RazerDevices.supportsDpiButtonBinding`), and so may send F20 for MacRazer to act on.
     var supportsDpiButtonBinding: Bool {
         activeKey != "none" && (activeDeviceID.map(RazerDevices.supportsDpiButtonBinding(pid:)) ?? false)
+    }
+    /// The connected mouse's DPI button only reports a click, when a short press is released
+    /// (`RazerDevices.dpiButtonActsOnRelease`). Its gesture is then a click and a swipe after
+    /// it: F20 starts a latched hold, and the page explains it that way.
+    var dpiButtonActsOnRelease: Bool {
+        activeKey != "none" && (activeDeviceID.map(RazerDevices.dpiButtonActsOnRelease(pid:)) ?? false)
     }
     /// The connected mouse has the Basilisk V3 X's Multi-function trigger, for the page's note.
     var hasMultiFunctionTrigger: Bool {
@@ -519,8 +554,9 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// only while a gesture needs them: they come at the mouse's polling rate, and a tap that
     /// doesn't ask for them never sees them. Keys only for the DPI button's F20 bridge.
     ///
-    /// `dpiGesture`: the DPI button is a gesture. While its F20 is held no mouse button is
-    /// down, so its movement comes as `.mouseMoved`, asked for only then and only with the
+    /// `dpiGesture`: the DPI button is a gesture. While its F20 is held, or in a latched hold's
+    /// window after its click, no mouse button is down, so its movement comes as
+    /// `.mouseMoved`, asked for only then and only with the
     /// keys: every move of the pointer goes through the tap while it's in the mask. Primary
     /// drags are never asked for, so a DPI hold sees no movement while the left or right
     /// button is also held: that movement is a drag the app under the pointer is doing.
@@ -643,6 +679,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// private so tests can hand it synthetic events.
     func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            GestureDebugLog.log("TAP DISABLED type=\(type.rawValue)")
             // Events went by unseen, perhaps the release that would have ended a hold.
             gestureHold = nil
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
@@ -727,9 +764,10 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         return moved ? nil : Unmanaged.passUnretained(event)
     }
 
-    /// A pointer move while the DPI button is held. Unlike a drag it always goes through: no
-    /// app saw a button go down, so to them it's a plain move, and swallowing it would only
-    /// leave hover effects behind the pointer.
+    /// A pointer move during a hold of the DPI button: while it's held, or in a latched hold's
+    /// window after its click. Unlike a drag it always goes through: no app saw a button go
+    /// down, so to them it's a plain move, and swallowing it would only leave hover effects
+    /// behind the pointer.
     private func handleDpiGestureMove(_ event: CGEvent) {
         moveGesture(dx: event.getDoubleValueField(.mouseEventDeltaX),
                     dy: event.getDoubleValueField(.mouseEventDeltaY), trigger: Self.dpiButton)
@@ -741,28 +779,96 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     // names the hold as in `GestureHold.trigger`.
 
     /// A gesture button went down: start a hold, replacing any other.
-    func beginGesture(_ bindings: GestureBindings, trigger: Int) {
-        gestureHold = GestureHold(trigger: trigger, bindings: bindings)
+    ///
+    /// `latched`: the button only reports a click (`dpiButtonActsOnRelease`), so no release
+    /// will mark the end of a hold. The hold is then a window of `latchedGestureWindow` from
+    /// now instead: its swipe ends it as it fires, and otherwise the window's end does,
+    /// firing its click. A latched hold that replaces another starts the window over.
+    func beginGesture(_ bindings: GestureBindings, trigger: Int, latched: Bool = false) {
+        if GestureDebugLog.enabled {
+            let kind = latched ? " latched window=\(Self.latchedGestureWindow)s" : ""
+            GestureDebugLog.log("begin trigger=\(trigger)\(kind) replacing=\(gestureHold.map { String($0.trigger) } ?? "none")")
+            debugMoveCount = 0
+        }
+        guard latched else {
+            gestureHold = GestureHold(trigger: trigger, bindings: bindings)
+            return
+        }
+        gestureHold = GestureHold(trigger: trigger, bindings: bindings,
+                                  latchDeadline: clock() + Self.latchedGestureWindow)
+        scheduleLatchTimer(after: Self.latchedGestureWindow)
     }
 
     /// The pointer moved by (dx, dy), CGEvent deltas with y growing downward. Fires the
-    /// direction's action the first time the hold's movement is far enough. Returns whether
-    /// a hold of `trigger` is in progress, and so whether the movement belongs to it.
+    /// direction's action the first time the hold's movement is far enough, which also ends
+    /// a latched hold. Returns whether a hold of `trigger` is in progress, and so whether the
+    /// movement belongs to it: not once a latched hold's window is over, which this ends
+    /// (its click) without counting the move, in case the timer hasn't run yet.
     @discardableResult
     func moveGesture(dx: Double, dy: Double, trigger: Int) -> Bool {
         guard gestureHold?.trigger == trigger else { return false }
+        if gestureHold?.latchDeadline != nil, expireLatchedGesture(now: clock()) { return false }
+        if GestureDebugLog.enabled {
+            debugMoveCount += 1
+            if debugMoveCount <= 5 { GestureDebugLog.log("move #\(debugMoveCount) dx=\(dx) dy=\(dy)") }
+        }
         // Mutated in place: a copy of the hold per event would be wasted work at this rate.
         if let direction = gestureHold?.recognizer.move(dx: dx, dy: dy), let hold = gestureHold {
+            GestureDebugLog.log("FIRE \(direction) after \(debugMoveCount) moves net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) action=\(hold.bindings.action(for: direction).label)\(hold.latchDeadline != nil ? ", ends the latched hold" : "")")
+            // No release is coming to end a latched hold, and nothing is left for it to do.
+            if hold.latchDeadline != nil { gestureHold = nil }
             apply(hold.bindings.action(for: direction))
         }
         return true
+    }
+
+    /// Ends a latched hold whose window is over at `now` (on `clock`), firing its click: a
+    /// swipe would have ended it already. The timer runs this, and so does every pointer move
+    /// of the hold, so a timer held up behind other work can't let a late move count. Returns
+    /// false, changing nothing, when there is no latched hold or its window is still open.
+    @discardableResult
+    func expireLatchedGesture(now: TimeInterval) -> Bool {
+        guard var hold = gestureHold, let deadline = hold.latchDeadline, now >= deadline else { return false }
+        GestureDebugLog.log("EXPIRE latched trigger=\(hold.trigger) late=\(String(format: "%.3f", now - deadline))s moves=\(debugMoveCount) net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) click=\(hold.bindings.click.label)")
+        gestureHold = nil
+        if hold.recognizer.end() { apply(hold.bindings.click) }
+        return true
+    }
+
+    /// (Re)starts the latched hold's timer. Replaces any timer already waiting.
+    private func scheduleLatchTimer(after interval: TimeInterval) {
+        latchTimer?.invalidate()
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in self?.latchTimerFired() }
+        // Common modes, as the tap's source: the window still ends while a menu is tracking.
+        RunLoop.main.add(timer, forMode: .common)
+        latchTimer = timer
+    }
+
+    private func latchTimerFired() {
+        latchTimer = nil
+        let now = clock()
+        expireLatchedGesture(now: now)
+        // Still open: the timer came before `clock` reached the deadline. Wait for the rest.
+        if let deadline = gestureHold?.latchDeadline {
+            scheduleLatchTimer(after: max(deadline - now, 0.01))
+        }
+    }
+
+    private func cancelLatchTimer() {
+        if latchTimer?.isValid == true { GestureDebugLog.log("latched hold over, timer cancelled") }
+        latchTimer?.invalidate()
+        latchTimer = nil
     }
 
     /// The gesture button came back up: fire the click if no swipe fired. Returns whether a
     /// hold of `trigger` was in progress.
     @discardableResult
     func endGesture(trigger: Int) -> Bool {
-        guard var hold = gestureHold, hold.trigger == trigger else { return false }
+        guard var hold = gestureHold, hold.trigger == trigger else {
+            GestureDebugLog.log("end trigger=\(trigger) but no such hold (held=\(gestureHold.map { String($0.trigger) } ?? "none"))")
+            return false
+        }
+        GestureDebugLog.log("end trigger=\(trigger) moves=\(debugMoveCount) net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) fired=\(hold.recognizer.fired.map { "\($0)" } ?? "none")")
         gestureHold = nil
         if hold.recognizer.end() { apply(hold.bindings.click) }
         return true
@@ -1060,19 +1166,30 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// key-down was swallowed is swallowed too, whatever changed in between (paused, the
     /// binding no longer confirmed, the action changed): an app that never saw F20 go down
     /// mustn't see it come up. Key repeats follow their press and never start anything.
+    ///
+    /// On a mouse whose DPI button only reports a click (`dpiButtonActsOnRelease`), F20 comes
+    /// as a pulse, down and up some 50 ms apart, when a short press is released. The press
+    /// then starts a latched hold, and the pulse's key-up leaves it open for the swipe that
+    /// follows the click (`beginGesture`). A second pulse starts the window over.
     private func handleDpiBridge(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         guard event.getIntegerValueField(.keyboardEventKeycode) == 90 else {
             return Unmanaged.passUnretained(event)
         }
         if type == .keyUp {
+            GestureDebugLog.log("F20 up swallowedDown=\(bridgeKeyIsDown)")
             guard bridgeKeyIsDown else { return Unmanaged.passUnretained(event) }
             bridgeKeyIsDown = false
-            // Nothing when the hold was already ended (paused, a mouse button pressed, …).
-            endGesture(trigger: Self.dpiButton)
+            if gestureHold?.latchDeadline != nil {
+                GestureDebugLog.log("F20 up leaves the latched hold open")
+            } else {
+                // Nothing when the hold was already ended (paused, a mouse button pressed, …).
+                endGesture(trigger: Self.dpiButton)
+            }
             return nil
         }
         guard type == .keyDown else { return Unmanaged.passUnretained(event) }
         if event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+            GestureDebugLog.log("F20 repeat")
             return bridgeKeyIsDown ? nil : Unmanaged.passUnretained(event)
         }
         let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
@@ -1081,13 +1198,15 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
               let action = dpiCycleSoftwareAction else {
             // A press let through: its repeats and release go through as well, even if one
             // before it lost its release.
+            GestureDebugLog.log("F20 down LET THROUGH supports=\(supportsDpiButtonBinding) confirmed=\(dpiBridgeBindingConfirmed) paused=\(remappingPaused) flags=\(String(event.flags.rawValue, radix: 16)) hasAction=\(dpiCycleSoftwareAction != nil)")
             bridgeKeyIsDown = false
             return Unmanaged.passUnretained(event)
         }
+        GestureDebugLog.log("F20 down taken")
         lastDetectedButton = Self.dpiButton
         bridgeKeyIsDown = true
         if case .gesture(let bindings) = action {
-            beginGesture(bindings, trigger: Self.dpiButton)
+            beginGesture(bindings, trigger: Self.dpiButton, latched: dpiButtonActsOnRelease)
         } else {
             apply(action)
         }

@@ -705,7 +705,7 @@ final class RazerDevicesTests: XCTestCase {
         XCTAssertTrue(RazerDevices.supportsSleepTimeout(pid: 0x00BA))
         XCTAssertTrue(RazerDevices.supportsStageEditing(pid: 0x00BA))
         XCTAssertTrue(RazerDevices.supportsDpiButtonBinding(pid: 0x00DC),
-                      "the Cobra's DPI button, pending confirmation of entry 0x60 on hardware")
+                      "the Cobra's DPI button, entry 0x60, seen taking F20 on hardware")
         XCTAssertTrue(RazerDevices.hasMultiFunctionTrigger(pid: 0x00BA))
         XCTAssertFalse(RazerDevices.hasMultiFunctionTrigger(pid: 0x00DC), "the Basilisk's note isn't the Cobra's")
         XCTAssertFalse(RazerDevices.supportsSleepTimeout(pid: 0x00DC))

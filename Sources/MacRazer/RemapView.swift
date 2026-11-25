@@ -124,6 +124,29 @@ struct RemapView: View {
             + "its clicks. Quit \(pronoun) and try again."
     }
 
+    /// How the gesture editor says a gesture is made. A mouse button's is held while the mouse
+    /// moves. The DPI button of a mouse that only reports a click (`dpiButtonActsOnRelease`)
+    /// can't be held, so its gesture is a click and then the movement.
+    nonisolated static func gestureEditorExplanation(clickThenSwipe: Bool) -> String {
+        clickThenSwipe
+            ? "Click the DPI button, then move the mouse up, down, left or right. "
+                + "If you don't move the mouse, Click runs."
+            : "Hold the button and move the mouse up, down, left or right. "
+                + "Press and release it without moving to click."
+    }
+
+    /// The help under the DPI button's menu. On a mouse whose DPI button only reports a
+    /// click, it also says how a gesture is made there, since it isn't held like the others.
+    nonisolated static func dpiButtonHelpText(clickThenSwipe: Bool) -> String {
+        let help = "Media, Double Click, Gesture and keys the mouse can't type itself need MacRazer "
+            + "running, with Accessibility and Input Monitoring on. While one is set, the button "
+            + "types F20 and MacRazer turns it into the action. Choose DPI Cycle (default) to "
+            + "put the button back."
+        guard clickThenSwipe else { return help }
+        return help + " On this mouse a gesture starts with a click. "
+            + gestureEditorExplanation(clickThenSwipe: true)
+    }
+
     /// The DPI button's binding and model notes.
     @ViewBuilder private var dpiAndModelNotes: some View {
         if let controller {
@@ -209,8 +232,8 @@ struct RemapView: View {
             VStack(spacing: 12) {
                 VStack(spacing: 4) {
                     Text("\(ButtonRemapper.label(for: button)) Gesture").font(.system(size: 14, weight: .semibold))
-                    Text("Hold the button and move the mouse up, down, left or right. "
-                         + "Press and release it without moving to click.")
+                    Text(Self.gestureEditorExplanation(
+                        clickThenSwipe: button == ButtonRemapper.dpiButton && remapper.dpiButtonActsOnRelease))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
@@ -563,10 +586,7 @@ private struct DpiCycleBindingSection: View {
                                     width: 190)
                     .disabled(controller.isUpdatingDpiCycleButton || controller.dpiCycleButtonBinding == nil)
                 }
-                Text("Media, Double Click, Gesture and keys the mouse can't type itself need MacRazer "
-                     + "running, with Accessibility and Input Monitoring on. While one is set, the button "
-                     + "types F20 and MacRazer turns it into the action. Choose DPI Cycle (default) to "
-                     + "put the button back.")
+                Text(RemapView.dpiButtonHelpText(clickThenSwipe: remapper.dpiButtonActsOnRelease))
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
