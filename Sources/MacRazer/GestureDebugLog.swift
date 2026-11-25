@@ -3,22 +3,55 @@
 
 import Foundation
 
-/// A diagnostic trace of gesture holds, off unless asked for:
+/// A diagnostic trace of gesture holds and of what the mouse reports, off unless asked for.
+/// Lines go to `~/Library/Logs/MacRazer MX/gesture.log`. It exists because nothing outside the
+/// app can watch what its event tap receives: another process needs its own Input Monitoring
+/// grant to see the same events.
+///
+/// Two defaults keys, each read once at launch, so relaunch after changing either.
 ///
 ///     defaults write com.cortinadev.macrazer-mx gestureDebugLog -bool true
 ///
-/// then relaunch. Lines go to `~/Library/Logs/MacRazer MX/gesture.log`. It exists because
-/// nothing outside the app can watch what its event tap receives: another process needs its
-/// own Input Monitoring grant to see the same events. It records button and F20 timing and
-/// pointer deltas only, never what is typed (see `GestureDebugHIDWatch` for how the raw HID
-/// watch keeps to that).
+/// turns the trace on. It records button and F20 timing and pointer deltas from the event tap;
+/// the mouse's own HID input reports other than pointer movement (`GestureDebugHIDWatch`,
+/// lines `HIDREPORT id=<n> len=<n> <hex>`); every characteristic of Razer's Bluetooth service
+/// (`GATT <uuid> properties=...`) and every value the mouse sends there that isn't part of a
+/// reply the app is waiting for (`BLE unsolicited <uuid>: <hex>`); and once per Bluetooth
+/// connection, after the reads the connection starts with, a fixed list of vendor reads
+/// (`BLEProtocol.traceProbeKeys`, lines `BLEREAD <key> -> <status, header, payload>`). All of
+/// that only reads: it changes nothing on the mouse. It never records what is typed: keyboards
+/// aren't watched, and the mouse's own keyboard report is logged only when the keys in it are
+/// F13 to F20 (`GestureDebugReportFilter`).
+///
+///     defaults write com.cortinadev.macrazer-mx gestureDebugDeviceMode -int 3
+///
+/// is an experiment, and does nothing unless the trace is on too. Once per connection, after
+/// the reads above, it puts the mouse in driver mode (`BLEProtocol.DeviceMode`) and reads the
+/// mode before and after, in `DEVMODE` lines. In driver mode the firmware stops handling its
+/// special buttons itself and reports them to the Mac instead: the DPI button no longer changes
+/// DPI, and MacRazer does nothing in its place. That changes how the mouse behaves until it is
+/// put back. MacRazer writes normal mode again when it quits (`DEVMODE quit`), and the mouse
+/// goes back to normal by itself when it is switched off and on. `-int 0` instead writes
+/// normal mode once per connection, the explicit restore after a quit that didn't get to it.
+/// Any other value is ignored, and no other mode can be written.
+///
+/// To turn everything off:
+///
+///     defaults delete com.cortinadev.macrazer-mx gestureDebugDeviceMode
+///     defaults delete com.cortinadev.macrazer-mx gestureDebugLog
+///
+/// then relaunch. If the experiment ran and you aren't sure the quit restored normal mode,
+/// switch the mouse off and on.
 enum GestureDebugLog {
     static let defaultsKey = "gestureDebugLog"
+    /// The device-mode experiment's key (`GestureDebugProbePlan`).
+    static let deviceModeKey = "gestureDebugDeviceMode"
 
     /// Read once: the tap's hot path must not ask UserDefaults per event.
     static let enabled = UserDefaults.standard.bool(forKey: defaultsKey)
 
     private static let start = Date()
+    private static let lock = NSLock()
     nonisolated(unsafe) private static var handle: FileHandle? = {
         let dir = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Logs/MacRazer MX", isDirectory: true)
@@ -32,50 +65,280 @@ enum GestureDebugLog {
         return handle
     }()
 
-    /// Main thread only, like the tap that calls it. The message is an autoclosure so a
-    /// disabled log costs one boolean test.
+    /// Any thread: the tap on the main thread, Bluetooth on its own queue, the probes on the
+    /// device queue. The message is an autoclosure so a disabled log costs one boolean test.
     static func log(_ message: @autoclosure () -> String) {
         guard enabled else { return }
-        let line = String(format: "%9.3f %@\n", Date().timeIntervalSince(start), message())
+        let text = message()
+        lock.lock()
+        defer { lock.unlock() }
+        let line = String(format: "%9.3f %@\n", Date().timeIntervalSince(start), text)
         handle?.write(Data(line.utf8))
+    }
+
+    static func hex(_ bytes: some Sequence<UInt8>) -> String {
+        bytes.map { String(format: "%02x", $0) }.joined(separator: " ")
+    }
+
+    /// A trace reply as `BLEREAD` and `DEVMODE` lines show it: the status, any earlier status a
+    /// later header for the same request replaced, the declared length (and how many bytes came
+    /// when that differs), the header frame, then every payload byte.
+    static func describe(_ reply: BLEProtocol.TraceAssembler, timedOut: Bool) -> String {
+        guard let header = reply.header, let status = reply.status else {
+            return timedOut ? "timeout, no reply" : "no reply"
+        }
+        var text = timedOut ? "timeout " : ""
+        text += String(format: "status=%02x", status)
+        if !reply.replacedStatuses.isEmpty { text += " (after \(hex(reply.replacedStatuses)))" }
+        text += " len=\(reply.declaredLength)"
+        if reply.payload.count != reply.declaredLength { text += " got=\(reply.payload.count)" }
+        text += " hdr=\(hex(header))"
+        if !reply.payload.isEmpty { text += ": \(hex(reply.payload))" }
+        return text
     }
 }
 
 import IOKit.hid
 
+/// What the trace may log of one HID input report from a watched mouse. Pure, so the rule that
+/// nothing typed is recorded is tested.
+enum GestureDebugReportFilter {
+    /// Pointer movement, at the polling rate, never logged: report 1 on the Cobra HyperSpeed
+    /// over Bluetooth, and 0, a device without report ids, whose one report is the pointer.
+    static let pointerReportIDs: Set<Int> = [0, 1]
+    /// The mouse's keyboard collection on the Cobra HyperSpeed over Bluetooth: what a button
+    /// bound to a key types.
+    static let keyboardReportIDs: Set<Int> = [6]
+    /// F13 to F20, what a remapped mouse button types (F20 is the DPI button's bridge).
+    static let loggableKeys: ClosedRange<UInt8> = 0x68...0x6F
+
+    /// The `HIDREPORT` line for a report, or nil for a pointer report. A keyboard report is
+    /// logged only when every non-zero byte after its report id is F13 to F20, modifiers
+    /// included, so a release (all zeros) is logged and anything else typed is not.
+    static func line(reportID: Int, bytes: [UInt8], pointer: Set<Int> = pointerReportIDs,
+                     keyboard: Set<Int> = keyboardReportIDs) -> String? {
+        guard !pointer.contains(reportID) else { return nil }
+        if keyboard.contains(reportID) {
+            let keys = reportID != 0 && bytes.first == UInt8(truncatingIfNeeded: reportID) ? bytes.dropFirst() : bytes[...]
+            guard keys.allSatisfy({ $0 == 0 || loggableKeys.contains($0) }) else {
+                return "HIDREPORT id=\(reportID) (not recorded)"
+            }
+        }
+        return "HIDREPORT id=\(reportID) len=\(bytes.count) \(GestureDebugLog.hex(bytes))"
+    }
+
+    /// Caps the reports of one id logged per second, so one that streams can't fill the disk.
+    struct RateLimit {
+        static let perSecond = 40
+        private var windows: [Int: (second: Int, count: Int, dropped: Int)] = [:]
+
+        /// Whether to log this report, and how many of its id went unlogged in the last second
+        /// that had any, to say so once.
+        mutating func admit(reportID: Int, at time: TimeInterval) -> (log: Bool, droppedBefore: Int) {
+            let second = Int(time.rounded(.down))
+            var window = windows[reportID] ?? (second: second, count: 0, dropped: 0)
+            var droppedBefore = 0
+            if window.second != second {
+                droppedBefore = window.dropped
+                window = (second: second, count: 0, dropped: 0)
+            }
+            window.count += 1
+            let log = window.count <= Self.perSecond
+            if !log { window.dropped += 1 }
+            windows[reportID] = window
+            return (log, droppedBefore)
+        }
+    }
+}
+
 /// With the trace on, also record what the mouse itself reports at the HID level, apart from
-/// pointer and wheel movement: a button the firmware handles on its own (the Cobra's DPI
-/// button) may still say something when it goes down, which only shows here.
+/// pointer movement: a button the firmware handles on its own (the Cobra's DPI button) may
+/// still say something when it goes down, which only shows here. Whole input reports, not
+/// element values: the Cobra over Bluetooth declares its reports 4 and 5 as arrays of Generic
+/// Desktop usage 0x03, which a filter on usage pages can't tell from pointer movement.
+///
+/// Main thread only, like the run loop it schedules on.
 enum GestureDebugHIDWatch {
     nonisolated(unsafe) private static var manager: IOHIDManager?
+    nonisolated(unsafe) private static var watched: [Watched] = []
+
+    /// One mouse interface being watched: the buffer its reports land in, sized from its
+    /// largest input report and kept until the device goes away, and which of its report ids
+    /// are pointer and keyboard ones, from its descriptor as well as the defaults.
+    private final class Watched: @unchecked Sendable {
+        let device: IOHIDDevice
+        let name: String
+        let buffer: UnsafeMutablePointer<UInt8>
+        let size: Int
+        let pointerIDs: Set<Int>
+        let keyboardIDs: Set<Int>
+        var rate = GestureDebugReportFilter.RateLimit()
+
+        init(device: IOHIDDevice, name: String, size: Int, pointerIDs: Set<Int>, keyboardIDs: Set<Int>) {
+            self.device = device
+            self.name = name
+            self.size = size
+            self.pointerIDs = pointerIDs
+            self.keyboardIDs = keyboardIDs
+            buffer = .allocate(capacity: size)
+        }
+
+        deinit { buffer.deallocate() }
+
+        func received(reportID: Int, bytes: [UInt8]) {
+            guard let line = GestureDebugReportFilter.line(reportID: reportID, bytes: bytes,
+                                                           pointer: pointerIDs, keyboard: keyboardIDs) else { return }
+            let verdict = rate.admit(reportID: reportID, at: ProcessInfo.processInfo.systemUptime)
+            if verdict.droppedBefore > 0 {
+                GestureDebugLog.log("HIDREPORT id=\(reportID) \(verdict.droppedBefore) more not logged "
+                                    + "(over \(GestureDebugReportFilter.RateLimit.perSecond) a second)")
+            }
+            if verdict.log { GestureDebugLog.log(line) }
+        }
+    }
+
+    /// Whether a HID device is one the trace watches: a Razer mouse, never a keyboard. Over
+    /// Bluetooth (vendor 0x068E), a mouse by its primary usage or by a product id MacRazer
+    /// knows there. On a cable or dongle (0x1532), only an interface whose primary usage is the
+    /// mouse, of a product the registry lists as a mouse, so no interface of a Razer keyboard.
+    static func watches(vendorID: Int, productID: Int, primaryUsagePage: Int, primaryUsage: Int) -> Bool {
+        let isMouse = primaryUsagePage == kHIDPage_GenericDesktop && primaryUsage == kHIDUsage_GD_Mouse
+        let isKeyboard = primaryUsagePage == kHIDPage_KeyboardOrKeypad
+            || (primaryUsagePage == kHIDPage_GenericDesktop
+                && (primaryUsage == kHIDUsage_GD_Keyboard || primaryUsage == kHIDUsage_GD_Keypad))
+        guard !isKeyboard else { return false }
+        switch vendorID {
+        case BLEProtocol.vendorId:
+            return isMouse || RazerDevices.bluetoothPIDs.contains(productID)
+        case Razer.vendorId:
+            return isMouse && RazerDevices.info(pid: productID) != nil && RazerAccessories.info(pid: productID) == nil
+        default:
+            return false
+        }
+    }
 
     /// Main thread, once. Needs Input Monitoring, which the F20 bridge needs anyway.
     static func startIfEnabled() {
         guard GestureDebugLog.enabled, manager == nil else { return }
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        let vendors = [0x1532, 0x068E].map { [kIOHIDVendorIDKey: $0] as CFDictionary }
-        IOHIDManagerSetDeviceMatchingMultiple(manager, vendors as CFArray)
-        IOHIDManagerRegisterInputValueCallback(manager, { _, _, _, value in
-            let element = IOHIDValueGetElement(value)
-            let page = IOHIDElementGetUsagePage(element)
-            let usage = IOHIDElementGetUsage(element)
-            // Generic Desktop is the pointer and wheel, at the polling rate: not wanted.
-            guard page != kHIDPage_GenericDesktop else { return }
-            // Never which key: the match is by vendor, so a keyboard of the same make is
-            // watched too, and what is typed on it must not reach a log. F13 to F20 are the
-            // exception, being what a remapped mouse button types.
-            if page == kHIDPage_KeyboardOrKeypad, !(0x68...0x6F).contains(usage) {
-                GestureDebugLog.log("HID keyboard key (not recorded)")
-                return
-            }
-            // The wheel's sideways axis reports with every packet and says nothing.
-            if page == kHIDPage_Consumer, usage == kHIDUsage_Csmr_ACPan { return }
-            GestureDebugLog.log(String(format: "HID page=%02x usage=%02x value=%ld len=%ld",
-                                       page, usage, IOHIDValueGetIntegerValue(value), IOHIDValueGetLength(value)))
+        let mouse = [kIOHIDPrimaryUsagePageKey: kHIDPage_GenericDesktop, kIOHIDPrimaryUsageKey: kHIDUsage_GD_Mouse]
+        // Narrower than `watches`, so the manager opens as little as it can; `watches` decides.
+        let matching: [[String: Int]] = [mouse.merging([kIOHIDVendorIDKey: BLEProtocol.vendorId]) { $1 }]
+            + RazerDevices.bluetoothPIDs.sorted().map { [kIOHIDVendorIDKey: BLEProtocol.vendorId, kIOHIDProductIDKey: $0] }
+            + [mouse.merging([kIOHIDVendorIDKey: Razer.vendorId]) { $1 }]
+        IOHIDManagerSetDeviceMatchingMultiple(manager, matching as CFArray)
+        IOHIDManagerRegisterDeviceMatchingCallback(manager, { _, _, _, device in
+            GestureDebugHIDWatch.matched(device)
+        }, nil)
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, { _, _, _, device in
+            GestureDebugHIDWatch.removed(device)
         }, nil)
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
         let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
-        GestureDebugLog.log("HID watch open result=\(result)")
+        GestureDebugLog.log("HID watch open result=\(HIDDevice.HIDError.hex(result))")
         self.manager = manager
+    }
+
+    private static func matched(_ device: IOHIDDevice) {
+        func number(_ key: String) -> Int { IOHIDDeviceGetProperty(device, key as CFString) as? Int ?? 0 }
+        let vendor = number(kIOHIDVendorIDKey), product = number(kIOHIDProductIDKey)
+        let page = number(kIOHIDPrimaryUsagePageKey), usage = number(kIOHIDPrimaryUsageKey)
+        let transport = IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String ?? "?"
+        let name = String(format: "vendor=%04x product=%04x usage=%02x:%02x transport=", vendor, product, page, usage)
+            + transport
+        guard watches(vendorID: vendor, productID: product, primaryUsagePage: page, primaryUsage: usage) else {
+            GestureDebugLog.log("HID watch skips \(name)")
+            return
+        }
+        guard !watched.contains(where: { CFEqual($0.device, device) }) else { return }
+        let size = number(kIOHIDMaxInputReportSizeKey)
+        let open = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
+        let opened = "open=\(HIDDevice.HIDError.hex(open)) maxInputReport=\(size)"
+        guard size > 0, open == kIOReturnSuccess else {
+            GestureDebugLog.log("HID watch matched \(name) \(opened), not watching")
+            return
+        }
+        let ids = reportIDs(of: device)
+        let entry = Watched(device: device, name: name, size: size, pointerIDs: ids.pointer, keyboardIDs: ids.keyboard)
+        IOHIDDeviceRegisterInputReportCallback(device, entry.buffer, size, { context, _, _, _, reportID, report, length in
+            guard let context else { return }
+            Unmanaged<Watched>.fromOpaque(context).takeUnretainedValue()
+                .received(reportID: Int(reportID), bytes: Array(UnsafeBufferPointer(start: report, count: max(0, length))))
+        }, Unmanaged.passUnretained(entry).toOpaque())
+        watched.append(entry)
+        GestureDebugLog.log("HID watch matched \(name) \(opened) skipping ids \(ids.pointer.sorted()), "
+                            + "F13-F20 only in ids \(ids.keyboard.sorted())")
+    }
+
+    private static func removed(_ device: IOHIDDevice) {
+        guard let index = watched.firstIndex(where: { CFEqual($0.device, device) }) else { return }
+        let entry = watched.remove(at: index)
+        IOHIDDeviceRegisterInputReportCallback(device, entry.buffer, entry.size, nil, nil)
+        GestureDebugLog.log("HID watch removed \(entry.name)")
+        // The buffer goes on the next turn of the run loop, not inside IOKit's own call.
+        DispatchQueue.main.async { withExtendedLifetime(entry) {} }
+    }
+
+    /// The report ids the descriptor puts pointer axes and keyboard keys in, on top of the
+    /// filter's defaults.
+    private static func reportIDs(of device: IOHIDDevice) -> (pointer: Set<Int>, keyboard: Set<Int>) {
+        var pointer = GestureDebugReportFilter.pointerReportIDs
+        var keyboard = GestureDebugReportFilter.keyboardReportIDs
+        let elements = IOHIDDeviceCopyMatchingElements(device, nil, IOOptionBits(kIOHIDOptionsTypeNone)) as? [IOHIDElement] ?? []
+        for element in elements {
+            let page = Int(IOHIDElementGetUsagePage(element)), usage = Int(IOHIDElementGetUsage(element))
+            let id = Int(IOHIDElementGetReportID(element))
+            if page == kHIDPage_KeyboardOrKeypad { keyboard.insert(id) }
+            if page == kHIDPage_GenericDesktop, usage == kHIDUsage_GD_X || usage == kHIDUsage_GD_Y { pointer.insert(id) }
+        }
+        return (pointer, keyboard)
+    }
+}
+
+/// What the trace sends over Bluetooth once per connection (`MouseController`), worked out from
+/// the defaults alone so it's tested without a mouse.
+enum GestureDebugProbePlan {
+    enum Step: Equatable, Sendable {
+        /// A read-only probe, logged `BLEREAD`.
+        case read(BLEProtocol.Key)
+        /// The device-mode read before or after the experiment's write, logged `DEVMODE`.
+        case readDeviceMode(String)
+        /// The experiment's write, logged `DEVMODE`.
+        case writeDeviceMode(BLEProtocol.DeviceMode)
+        /// A `DEVMODE` line and nothing sent.
+        case note(String)
+    }
+
+    /// What `gestureDebugDeviceMode` asks for.
+    enum DeviceModeSetting: Equatable, Sendable {
+        case absent
+        case write(BLEProtocol.DeviceMode)
+        case ignored(String)
+    }
+
+    /// Driver mode for the number 3, normal mode for 0, nothing when the key isn't there, and
+    /// nothing for any other value, a true or false among them.
+    static func deviceModeSetting(_ value: Any?) -> DeviceModeSetting {
+        guard let value else { return .absent }
+        if let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() {
+            if number.doubleValue == 3 { return .write(.driver) }
+            if number.doubleValue == 0 { return .write(.normal) }
+        }
+        return .ignored(String(describing: value))
+    }
+
+    /// The read-only probes, then, when the key asks for one, the device-mode write with a read
+    /// of the mode before and after it.
+    static func steps(deviceMode: DeviceModeSetting) -> [Step] {
+        var steps = BLEProtocol.traceProbeKeys.map(Step.read)
+        switch deviceMode {
+        case .absent:
+            break
+        case .write(let mode):
+            steps += [.readDeviceMode("before"), .writeDeviceMode(mode), .readDeviceMode("after")]
+        case .ignored(let value):
+            steps.append(.note("\(GestureDebugLog.deviceModeKey)=\(value) ignored: only 3 (driver mode) and 0 (normal mode) act"))
+        }
+        return steps
     }
 }

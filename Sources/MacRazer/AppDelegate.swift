@@ -1029,6 +1029,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, UNU
         monitor?.invalidate()
         updateTimer?.invalidate()
         updatePathMonitor?.cancel()
+        // Only acts when the gesture trace's device-mode experiment ran (`GestureDebugLog`).
+        controller.restoreTraceDeviceModeIfSet()
         controller.flushHistoryToDisk()
     }
 

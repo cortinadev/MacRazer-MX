@@ -2324,7 +2324,96 @@ final class MouseController: ObservableObject, @unchecked Sendable {
             // slider, a saved profile and the next colour pick all agree with what it shows.
             self.update(\.effect, self.supported(self.effect))
         }
+        if GestureDebugLog.enabled, let bluetooth = d as? BluetoothDevice { scheduleTraceProbes(bluetooth) }
         return d
+    }
+
+    // MARK: - Gesture trace (diagnostic only)
+
+    /// io only. The Bluetooth connection the gesture trace has probed, so each is probed once.
+    private weak var traceProbedDevice: BluetoothDevice?
+    /// Whether this run's device-mode experiment may have left the mouse in driver mode, for
+    /// the restore at quit. Under the lock: quit asks from the main thread.
+    private var traceDriverModeMaybeSet = false
+    private let traceDeviceModeLock = NSLock()
+    /// Long enough for the reads a new connection starts with (battery, settings, the DPI
+    /// button's entry) to be on `io` before the probes.
+    static let traceProbeDelay: TimeInterval = 3
+    /// How long quit waits for the restore: one trace exchange, and a little for `io` to free up.
+    static let traceRestoreTimeout: TimeInterval = 3
+
+    private var traceDriverModeIsMaybeSet: Bool {
+        traceDeviceModeLock.lock()
+        defer { traceDeviceModeLock.unlock() }
+        return traceDriverModeMaybeSet
+    }
+
+    private func setTraceDriverModeMaybeSet(_ value: Bool) {
+        traceDeviceModeLock.lock(); traceDriverModeMaybeSet = value; traceDeviceModeLock.unlock()
+    }
+
+    /// io only, with the trace on. Queues `GestureDebugProbePlan`'s steps for a connection just
+    /// opened: the read-only probes, then the device-mode experiment if its key asks for it.
+    private func scheduleTraceProbes(_ bluetooth: BluetoothDevice) {
+        guard traceProbedDevice !== bluetooth else { return }
+        traceProbedDevice = bluetooth
+        let setting = GestureDebugProbePlan.deviceModeSetting(UserDefaults.standard.object(forKey: GestureDebugLog.deviceModeKey))
+        let steps = GestureDebugProbePlan.steps(deviceMode: setting)
+        io.asyncAfter(deadline: .now() + Self.traceProbeDelay) { [weak self] in
+            GestureDebugLog.log(String(format: "BLEREAD probing %@ (product %04x)", bluetooth.productName, bluetooth.productID))
+            self?.runTraceSteps(steps[...], on: bluetooth)
+        }
+    }
+
+    /// io only. One step, then the rest queued behind whatever is waiting on `io` by then, so a
+    /// tap never waits for the whole run. Stops when the connection is no longer the one being
+    /// probed, or a device test holds the mouse.
+    private func runTraceSteps(_ steps: ArraySlice<GestureDebugProbePlan.Step>, on bluetooth: BluetoothDevice) {
+        guard let step = steps.first else { return }
+        guard (device as? BluetoothDevice) === bluetooth, !deviceTestActiveForIO else {
+            GestureDebugLog.log("BLEREAD stopped: the connection changed, or a device test holds the mouse")
+            return
+        }
+        switch step {
+        case .read(let key):
+            GestureDebugLog.log("BLEREAD \(GestureDebugLog.hex(key.bytes)) -> \(bluetooth.traceRead(key).text)")
+        case .readDeviceMode(let label):
+            let key = BLEProtocol.Key.deviceModeGet
+            GestureDebugLog.log("DEVMODE read \(label) \(GestureDebugLog.hex(key.bytes)) -> \(bluetooth.traceRead(key).text)")
+        case .writeDeviceMode(let mode):
+            // Marked before sending: a write that goes unanswered may still have landed.
+            if mode == .driver { setTraceDriverModeMaybeSet(true) }
+            let result = bluetooth.traceSetDeviceMode(mode)
+            if mode == .normal, result.succeeded { setTraceDriverModeMaybeSet(false) }
+            let request = BLEProtocol.deviceModeRequest(mode)
+            GestureDebugLog.log("DEVMODE write \(GestureDebugLog.hex(request.key.bytes)) "
+                                + "[\(GestureDebugLog.hex(request.payload))] -> \(result.text)")
+        case .note(let text):
+            GestureDebugLog.log("DEVMODE \(text)")
+        }
+        io.async { [weak self] in self?.runTraceSteps(steps.dropFirst(), on: bluetooth) }
+    }
+
+    /// Called from `applicationWillTerminate`. When this run's experiment may have left the
+    /// mouse in driver mode, writes normal mode back before quitting, waiting briefly: like
+    /// `flushHistoryToDisk`, `io` may be busy, and quitting isn't held for it.
+    func restoreTraceDeviceModeIfSet() {
+        guard traceDriverModeIsMaybeSet else { return }
+        let done = DispatchSemaphore(value: 0)
+        io.async { [weak self] in
+            defer { done.signal() }
+            guard let self else { return }
+            guard let bluetooth = self.device as? BluetoothDevice else {
+                GestureDebugLog.log("DEVMODE quit: no Bluetooth connection to write normal mode on")
+                return
+            }
+            let result = bluetooth.traceSetDeviceMode(.normal)
+            if result.succeeded { self.setTraceDriverModeMaybeSet(false) }
+            GestureDebugLog.log("DEVMODE quit: write 01 02 00 00 [00 00] -> \(result.text)")
+        }
+        if done.wait(timeout: .now() + Self.traceRestoreTimeout) == .timedOut {
+            GestureDebugLog.log("DEVMODE quit: gave up waiting for the device queue; normal mode may not have been written")
+        }
     }
 
     /// Moves every per-device store from one key to another — files and UserDefaults —

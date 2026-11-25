@@ -202,4 +202,81 @@ final class BLEProtocolTests: XCTestCase {
         XCTAssertNil(BLEProtocol.request(for: RazerCommands.getChargingStatus(), stages: nil),
                      "unknown over BLE: the poll treats it as 'charging unknown'")
     }
+
+    func testAssemblerSaysWhichFramesItTook() {
+        var a = BLEProtocol.Assembler(id: 0x30)
+        XCTAssertFalse(a.add(data("01 00 00 00 00 00 00 03")), "the mouse's own frame")
+        XCTAssertTrue(a.add(data("30 01 00 00 00 00 00 02")))
+        XCTAssertTrue(a.add(data("61")))
+        XCTAssertFalse(a.add(data("05 05 02 03 84 03 84")), "after the reply is complete")
+    }
+
+    // MARK: Gesture trace
+
+    func testTraceProbesAreTheListedReadsInOrder() {
+        XCTAssertEqual(BLEProtocol.traceProbeKeys.map(\.bytes), [
+            [0x01, 0x82, 0x00, 0x00], [0x01, 0x80, 0x00, 0x00],
+            [0x08, 0x80, 0x00, 0x00], [0x08, 0x80, 0x01, 0x00], [0x08, 0x83, 0x01, 0x00],
+            [0x08, 0x84, 0x00, 0x60], [0x08, 0x84, 0x01, 0x60], [0x08, 0x84, 0x02, 0x60],
+            [0x08, 0x84, 0x03, 0x60], [0x08, 0x84, 0x04, 0x60], [0x08, 0x84, 0x05, 0x60],
+            [0x08, 0x84, 0x00, 0x80], [0x08, 0x84, 0x01, 0x80],
+            [0x03, 0x82, 0x00, 0x00], [0x0B, 0x81, 0x00, 0x00],
+        ])
+        for key in BLEProtocol.traceProbeKeys {
+            let request = BLEProtocol.traceReadRequest(key)
+            XCTAssertEqual(request?.payload, [], "\(key.bytes)")
+            XCTAssertEqual(request.map { BLEProtocol.frames(id: 0x30, request: $0).count }, 1, "a header and nothing else")
+        }
+    }
+
+    func testTraceReadRefusesAnyKeyWithoutTheReadBit() {
+        for key in [BLEProtocol.Key.deviceModeSet, .dpiButtonSet, .dpiStagesSet, .staticColor, .powerTimeoutSet,
+                    BLEProtocol.Key(0x01, 0x04, 0x00, 0x00)] {
+            XCTAssertNil(BLEProtocol.traceReadRequest(key), "\(key.bytes)")
+        }
+    }
+
+    func testDeviceModeRequestWritesOnlyNormalOrDriverMode() {
+        XCTAssertEqual(BLEProtocol.frames(id: 0x41, request: BLEProtocol.deviceModeRequest(.driver)),
+                       [data("41 02 00 00 01 02 00 00"), data("03 00")])
+        XCTAssertEqual(BLEProtocol.frames(id: 0x42, request: BLEProtocol.deviceModeRequest(.normal)),
+                       [data("42 02 00 00 01 02 00 00"), data("00 00")])
+        XCTAssertEqual((0...255).compactMap { BLEProtocol.DeviceMode(rawValue: UInt8($0)) }, [.normal, .driver])
+        XCTAssertEqual(BLEProtocol.Key.deviceModeGet.bytes, [0x01, 0x82, 0x00, 0x00])
+    }
+
+    func testTraceAssemblerKeepsTheWholeReply() {
+        var a = BLEProtocol.TraceAssembler(id: 0x30)
+        XCTAssertFalse(a.add(data("01 00 00 00 00 00 00 03")))
+        XCTAssertTrue(a.add(data("30 02 00 00 00 00 00 02 00 00 00 00 00 00 00 00 00 00 00 00")))
+        XCTAssertFalse(a.isComplete)
+        XCTAssertTrue(a.add(data("03 00 ff")))
+        XCTAssertTrue(a.isSuccess)
+        XCTAssertEqual(a.payload, [0x03, 0x00, 0xFF], "past the declared length too")
+        XCTAssertEqual(a.header?.count, 20)
+        XCTAssertFalse(a.add(data("30 00 00 00 00 00 00 02")), "nothing after a success")
+    }
+
+    func testTraceAssemblerReadsA24BitLength() {
+        var a = BLEProtocol.TraceAssembler(id: 0x31)
+        a.add(data("31 2c 01 00 00 00 00 02"))
+        XCTAssertEqual(a.declaredLength, 300, "an Assembler would take 0x2c")
+        for _ in 0..<14 { a.add(Data(repeating: 0xAB, count: 20)) }
+        XCTAssertFalse(a.isComplete)
+        a.add(Data(repeating: 0xAB, count: 20))
+        XCTAssertTrue(a.isSuccess)
+        XCTAssertEqual(a.payload.count, 300)
+    }
+
+    func testTraceAssemblerLetsALaterSuccessReplaceARefusal() {
+        var a = BLEProtocol.TraceAssembler(id: 0x32)
+        a.add(data("32 00 00 00 00 00 00 03"))
+        XCTAssertTrue(a.isComplete)
+        XCTAssertFalse(a.isSuccess)
+        XCTAssertTrue(a.add(data("32 02 00 00 00 00 00 02")))
+        a.add(data("00 00"))
+        XCTAssertTrue(a.isSuccess)
+        XCTAssertEqual(a.replacedStatuses, [0x03])
+        XCTAssertEqual(a.payload, [0x00, 0x00])
+    }
 }

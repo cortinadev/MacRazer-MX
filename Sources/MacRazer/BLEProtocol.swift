@@ -18,6 +18,9 @@ enum BLEProtocol {
     static let serviceUUID = "52401523-F97C-7F90-0E7F-6C6F4E36DB1C"
     static let writeUUID = "52401524-F97C-7F90-0E7F-6C6F4E36DB1C"
     static let notifyUUID = "52401525-F97C-7F90-0E7F-6C6F4E36DB1C"
+    /// A third characteristic other Razer Bluetooth mice expose (read and notify), purpose
+    /// unknown. Only the gesture trace subscribes to it (`GestureDebugLog`).
+    static let auxiliaryUUID = "52401526-F97C-7F90-0E7F-6C6F4E36DB1C"
     /// Vendor id the mouse reports over Bluetooth (Device Information PnP ID, and the
     /// IOHID `VendorID`). Not the USB 0x1532.
     static let vendorId = 0x068E
@@ -57,6 +60,97 @@ enum BLEProtocol {
         static func buttonFunctionSet(_ id: UInt8, slot: UInt8 = 0x01) -> Key { Key(0x08, 0x04, slot, id) }
         /// The onboard profile slot the mouse is using, as one byte (Basilisk V4 Pro, #55).
         static let activeSlotGet = Key(0x03, 0x82, 0x00, 0x00)
+        /// The mouse's device mode, a little-endian u16: `00 00` normal, `03 00` driver
+        /// (`DeviceMode`). Read and written by the gesture trace only.
+        static let deviceModeGet = Key(0x01, 0x82, 0x00, 0x00)
+        static let deviceModeSet = Key(0x01, 0x02, 0x00, 0x00)
+
+        /// A read, by the usual Razer convention of the command byte's high bit.
+        var isRead: Bool { bytes[1] & 0x80 != 0 }
+    }
+
+    // MARK: - Gesture trace (diagnostic only)
+
+    /// The device modes the gesture trace's experiment may write (`gestureDebugDeviceMode`,
+    /// see `GestureDebugLog`), and no others. In `normal` the firmware handles its special
+    /// buttons itself (the Cobra's DPI button cycles DPI); in `driver` it reports them to the
+    /// host instead, as private keys in HID input report 4 (0x52 the DPI button, 0xD2 the AI
+    /// long press), and leaves acting on them to the host.
+    enum DeviceMode: UInt8, Equatable, Sendable {
+        case normal = 0x00
+        case driver = 0x03
+    }
+
+    /// The one write the trace can send: `01 02 00 00` with `[mode, 0]`. Built only from a
+    /// `DeviceMode`, so no other mode, and no other class 01 key, can be written this way.
+    static func deviceModeRequest(_ mode: DeviceMode) -> Request {
+        Request(key: .deviceModeSet, payload: [mode.rawValue, 0x00], reply: .ack)
+    }
+
+    /// A read for the trace, or nil for a key that isn't one (`Key.isRead`): the trace's
+    /// probes can't write anything by accident.
+    static func traceReadRequest(_ key: Key) -> Request? {
+        key.isRead ? Request(key: key, payload: [], reply: .ack) : nil
+    }
+
+    /// The trace's read-only probes, in the order they run once per connection: the device
+    /// mode, the class 01 command catalogue, the button inventory and every binding, the DPI
+    /// button's entry (0x60) in the slot in use and in slots 1-5, entry 0x80 (slot in use and
+    /// slot 1), the profile slot in use, and the live DPI.
+    static let traceProbeKeys: [Key] = [
+        .deviceModeGet,
+        Key(0x01, 0x80, 0x00, 0x00),
+        Key(0x08, 0x80, 0x00, 0x00),
+        Key(0x08, 0x80, 0x01, 0x00),
+        Key(0x08, 0x83, 0x01, 0x00),
+    ] + (0...5).map { Key(0x08, 0x84, UInt8($0), 0x60) } + [
+        Key(0x08, 0x84, 0x00, 0x80),
+        Key(0x08, 0x84, 0x01, 0x80),
+        .activeSlotGet,
+        Key(0x0B, 0x81, 0x00, 0x00),
+    ]
+
+    /// A reply as the trace records it, kept whole where `Assembler` keeps what the app needs:
+    /// the header frame as it came, the length as the 24-bit little-endian value other
+    /// implementations read from bytes 1-3 (`Assembler` reads byte 1 only), and every byte of
+    /// every continuation frame, past the declared length too.
+    ///
+    /// Some Razer firmware answers status 03 and then 02 for the same request. So a complete
+    /// reply that isn't a success gives way to a later header with the same id, and the status
+    /// it had is kept in `replacedStatuses`. `BluetoothDevice` waits a moment for that before
+    /// it reports a refusal.
+    struct TraceAssembler: Sendable {
+        let id: UInt8
+        private(set) var header: [UInt8]?
+        private(set) var payload: [UInt8] = []
+        private(set) var replacedStatuses: [UInt8] = []
+
+        init(id: UInt8) { self.id = id }
+
+        var status: UInt8? { header.map { $0[7] } }
+        var declaredLength: Int {
+            header.map { Int($0[1]) | Int($0[2]) << 8 | Int($0[3]) << 16 } ?? 0
+        }
+        var isComplete: Bool { header != nil && payload.count >= declaredLength }
+        var isSuccess: Bool { isComplete && status == Status.ok.rawValue }
+
+        /// Whether the frame belongs to this reply. A frame that doesn't (another id before
+        /// the header, anything after a successful reply) is the caller's to report.
+        @discardableResult
+        mutating func add(_ frame: Data) -> Bool {
+            let bytes = Array(frame)
+            let isHeader = bytes.count >= 8 && bytes[0] == id
+            if header == nil || (isComplete && !isSuccess && isHeader) {
+                guard isHeader else { return false }
+                if let status { replacedStatuses.append(status) }
+                header = bytes
+                payload = []
+                return true
+            }
+            guard !isComplete else { return false }
+            payload += bytes
+            return true
+        }
     }
 
     /// One entry of the mouse's function table: what the button does now, and its factory
@@ -334,16 +428,20 @@ enum BLEProtocol {
         /// The reply is complete: header seen and every payload byte collected.
         var isComplete: Bool { status != nil && payload.count >= expected }
 
-        mutating func add(_ frame: Data) {
+        /// Returns whether the frame was taken as this reply's header or payload, so the
+        /// gesture trace can report the ones that weren't.
+        @discardableResult
+        mutating func add(_ frame: Data) -> Bool {
             let bytes = Array(frame)
             if status == nil {
-                guard bytes.count >= 8, bytes[0] == id else { return }
+                guard bytes.count >= 8, bytes[0] == id else { return false }
                 status = bytes[7]
                 expected = Int(bytes[1])
-                return
+                return true
             }
-            guard !isComplete else { return }
+            guard !isComplete else { return false }
             payload.append(contentsOf: bytes.prefix(expected - payload.count))
+            return true
         }
 
         /// The finished payload, or the error the status byte stands for.

@@ -25,6 +25,7 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     private let service = CBUUID(string: BLEProtocol.serviceUUID)
     private let writeUUID = CBUUID(string: BLEProtocol.writeUUID)
     private let notifyUUID = CBUUID(string: BLEProtocol.notifyUUID)
+    private let auxiliaryUUID = CBUUID(string: BLEProtocol.auxiliaryUUID)
     private let deviceInfoService = CBUUID(string: "180A")
     private let pnpIDUUID = CBUUID(string: "2A50")
 
@@ -36,20 +37,25 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     private var pnpChecked = false
     private var onStateChange: (() -> Void)?
     private var pending: Exchange?
+    /// Characteristics the gesture trace asked to read, so their values log as reads.
+    private var tracedReads: Set<CBUUID> = []
 
     // `io` only (the caller's queue).
     private var nextID: UInt8 = 0x30
 
     /// One request in flight: the frames still to write and the reply being assembled.
+    /// A gesture trace exchange (`traceExchange`) collects its reply in `trace` instead.
     private final class Exchange: @unchecked Sendable {
         var frames: [Data]
         var assembler: BLEProtocol.Assembler
+        var trace: BLEProtocol.TraceAssembler?
         let done = DispatchSemaphore(value: 0)
         var error: Error?
         var finished = false
-        init(frames: [Data], id: UInt8) {
+        init(frames: [Data], id: UInt8, traced: Bool = false) {
             self.frames = frames
             self.assembler = BLEProtocol.Assembler(id: id)
+            self.trace = traced ? BLEProtocol.TraceAssembler(id: id) : nil
         }
     }
 
@@ -293,10 +299,16 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
         return targets
     }
 
-    private func exchange(_ request: BLEProtocol.Request) throws -> Data {
+    /// `io` only. The next request id.
+    private func takeID() -> UInt8 {
         let id = nextID
         // Stay clear of 0x00 and 0x01: the mouse uses 0x01 for its unsolicited frame.
         nextID = nextID >= 0xEF ? 0x30 : nextID + 1
+        return id
+    }
+
+    private func exchange(_ request: BLEProtocol.Request) throws -> Data {
+        let id = takeID()
         let exchange = Exchange(frames: BLEProtocol.frames(id: id, request: request), id: id)
         queue.async { self.start(exchange) }
         guard exchange.done.wait(timeout: .now() + Self.requestTimeout) == .success else {
@@ -305,6 +317,109 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
         }
         if let error = exchange.error { throw error }
         return try exchange.assembler.result()
+    }
+
+    // MARK: - Gesture trace (diagnostic only)
+
+    /// What one trace exchange came back with: the text the trace logs, and whether the mouse
+    /// answered it with success.
+    struct TraceResult: Sendable {
+        let text: String
+        let succeeded: Bool
+    }
+
+    /// Longer than `requestTimeout`: a trace read may bring back a reply larger than any the
+    /// app asks for (every binding at once).
+    static let traceRequestTimeout: TimeInterval = 2
+    /// How long a refusal waits for a success for the same request (`TraceAssembler`).
+    static let traceRefusalGrace: TimeInterval = 0.25
+
+    /// One read for the gesture trace (`GestureDebugLog`), on the caller's queue like every
+    /// other exchange: sent once, never retried, its reply kept whole. Only a key with the read
+    /// bit is sent (`BLEProtocol.traceReadRequest`). Never throws: a failure is the result.
+    func traceRead(_ key: BLEProtocol.Key) -> TraceResult {
+        guard let request = BLEProtocol.traceReadRequest(key) else {
+            return TraceResult(text: "not sent: not a read key", succeeded: false)
+        }
+        return traceExchange(request)
+    }
+
+    /// The device-mode write of the trace's experiment (`gestureDebugDeviceMode`), sent once.
+    /// `BLEProtocol.deviceModeRequest` is the only write the trace can make.
+    func traceSetDeviceMode(_ mode: BLEProtocol.DeviceMode) -> TraceResult {
+        traceExchange(BLEProtocol.deviceModeRequest(mode))
+    }
+
+    private func traceExchange(_ request: BLEProtocol.Request) -> TraceResult {
+        let id = takeID()
+        let exchange = Exchange(frames: BLEProtocol.frames(id: id, request: request), id: id, traced: true)
+        queue.async { self.start(exchange) }
+        _ = exchange.done.wait(timeout: .now() + Self.traceRequestTimeout)
+        return queue.sync {
+            // Read here, where frames arrive, so a late one can't land halfway through.
+            let timedOut = !exchange.finished
+            if self.pending === exchange { self.pending = nil }
+            if let error = exchange.error { return TraceResult(text: "failed: \(error)", succeeded: false) }
+            guard let reply = exchange.trace else { return TraceResult(text: "no reply", succeeded: false) }
+            return TraceResult(text: GestureDebugLog.describe(reply, timedOut: timedOut),
+                               succeeded: !timedOut && reply.isSuccess)
+        }
+    }
+
+    /// `queue` only. A frame went into a trace exchange's reply: finish on success, and on a
+    /// refusal after a short wait, in case the success for the same request follows.
+    private func traceFrameTaken(_ exchange: Exchange) {
+        guard let reply = exchange.trace, reply.isComplete else { return }
+        if reply.isSuccess { finish(exchange, error: nil); return }
+        let replaced = reply.replacedStatuses.count
+        queue.asyncAfter(deadline: .now() + Self.traceRefusalGrace) { [weak self] in
+            guard let self, self.pending === exchange,
+                  exchange.trace?.replacedStatuses.count == replaced else { return }
+            self.finish(exchange, error: nil)
+        }
+    }
+
+    /// `queue` only. Logs a value that isn't part of a reply being assembled.
+    private func traceUnsolicited(_ characteristic: CBCharacteristic, _ value: Data) {
+        guard GestureDebugLog.enabled else { return }
+        let kind = tracedReads.remove(characteristic.uuid) != nil ? "read" : "unsolicited"
+        GestureDebugLog.log("BLE \(kind) \(characteristic.uuid.uuidString): \(GestureDebugLog.hex(value))")
+    }
+
+    /// `queue` only. Lists Razer's service as the mouse describes it, then subscribes to
+    /// `BLEProtocol.auxiliaryUUID` (and reads it once) when the mouse has it.
+    private func traceCharacteristics(of service: CBService, on peripheral: CBPeripheral) {
+        let characteristics = service.characteristics ?? []
+        for c in characteristics {
+            GestureDebugLog.log("GATT \(c.uuid.uuidString) properties=\(Self.describe(c.properties))")
+        }
+        guard let auxiliary = characteristics.first(where: { $0.uuid == auxiliaryUUID }) else {
+            GestureDebugLog.log("GATT \(BLEProtocol.auxiliaryUUID) not present")
+            return
+        }
+        if !auxiliary.properties.isDisjoint(with: [.notify, .indicate]) {
+            GestureDebugLog.log("GATT subscribing to \(BLEProtocol.auxiliaryUUID)")
+            peripheral.setNotifyValue(true, for: auxiliary)
+        }
+        if auxiliary.properties.contains(.read) {
+            tracedReads.insert(auxiliary.uuid)
+            peripheral.readValue(for: auxiliary)
+        }
+    }
+
+    /// A characteristic's properties by name, for the trace: "read,notify".
+    static func describe(_ properties: CBCharacteristicProperties) -> String {
+        let names: [(CBCharacteristicProperties, String)] = [
+            (.broadcast, "broadcast"), (.read, "read"), (.writeWithoutResponse, "writeWithoutResponse"),
+            (.write, "write"), (.notify, "notify"), (.indicate, "indicate"),
+            (.authenticatedSignedWrites, "authenticatedSignedWrites"), (.extendedProperties, "extendedProperties"),
+            (.notifyEncryptionRequired, "notifyEncryptionRequired"),
+            (.indicateEncryptionRequired, "indicateEncryptionRequired"),
+        ]
+        let known = names.filter { properties.contains($0.0) }.map(\.1)
+        let rest = properties.subtracting(CBCharacteristicProperties(names.map(\.0)))
+        let all = known + (rest.isEmpty ? [] : [String(format: "0x%x", rest.rawValue)])
+        return all.isEmpty ? "none" : all.joined(separator: ",")
     }
 
     func close() {
@@ -374,7 +489,9 @@ extension BluetoothDevice: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         for s in peripheral.services ?? [] where s.uuid == service || s.uuid == deviceInfoService {
-            peripheral.discoverCharacteristics(s.uuid == service ? [writeUUID, notifyUUID] : [pnpIDUUID], for: s)
+            // The gesture trace asks for all of Razer's characteristics, to list them.
+            let wanted = s.uuid == service ? (GestureDebugLog.enabled ? nil : [writeUUID, notifyUUID]) : [pnpIDUUID]
+            peripheral.discoverCharacteristics(wanted, for: s)
         }
     }
 
@@ -387,10 +504,19 @@ extension BluetoothDevice: CBCentralManagerDelegate, CBPeripheralDelegate {
             default: break
             }
         }
+        if GestureDebugLog.enabled, service.uuid == self.service {
+            traceCharacteristics(of: service, on: peripheral)
+        }
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
-        guard characteristic.uuid == notifyUUID else { return }
+        guard characteristic.uuid == notifyUUID else {
+            if GestureDebugLog.enabled {
+                GestureDebugLog.log("GATT \(characteristic.uuid.uuidString) notifying=\(characteristic.isNotifying)"
+                                    + (error.map { " error=\($0.localizedDescription)" } ?? ""))
+            }
+            return
+        }
         notifyReady = error == nil && characteristic.isNotifying
         onStateChange?()
     }
@@ -402,6 +528,10 @@ extension BluetoothDevice: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        if let error, GestureDebugLog.enabled, characteristic.uuid != pnpIDUUID {
+            tracedReads.remove(characteristic.uuid)
+            GestureDebugLog.log("BLE \(characteristic.uuid.uuidString) error=\(error.localizedDescription)")
+        }
         guard let value = characteristic.value else { return }
         if characteristic.uuid == pnpIDUUID {
             // PnP ID: [vendorIdSource, vid_lo, vid_hi, pid_lo, pid_hi, ver_lo, ver_hi]. Only
@@ -415,13 +545,19 @@ extension BluetoothDevice: CBCentralManagerDelegate, CBPeripheralDelegate {
             if matches { onStateChange?() }
             return
         }
-        if GestureDebugLog.enabled, pending == nil || characteristic.uuid != notifyUUID {
-            let hex = value.map { String(format: "%02x", $0) }.joined(separator: " ")
-            let uuid = characteristic.uuid.uuidString
-            DispatchQueue.main.async { GestureDebugLog.log("BLE unsolicited \(uuid): \(hex)") }
+        guard characteristic.uuid == notifyUUID, let pending else {
+            traceUnsolicited(characteristic, value)
+            return
         }
-        guard characteristic.uuid == notifyUUID, let pending else { return }
-        pending.assembler.add(value)
-        if pending.assembler.isComplete { finish(pending, error: nil) }
+        let taken: Bool
+        if pending.trace != nil {
+            taken = pending.trace?.add(value) ?? false
+            if taken { traceFrameTaken(pending) }
+        } else {
+            taken = pending.assembler.add(value)
+            if pending.assembler.isComplete { finish(pending, error: nil) }
+        }
+        // A frame that isn't this reply's: an earlier request's late answer, or the mouse's own.
+        if !taken { traceUnsolicited(characteristic, value) }
     }
 }
