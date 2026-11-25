@@ -338,8 +338,9 @@ moving and the **Click** action runs.
 - **The DPI button** can be a gesture too (see [The DPI button](#the-dpi-button)). On the Cobra
   HyperSpeed over Bluetooth the gesture starts only once the mouse recognises a long press,
   about a second after you press, so hold the button until it starts, then swipe. A short
-  press does the Click slot. Its Click shows **DPI Cycle** instead of None, because with None
-  MacRazer MX cycles the DPI stage itself.
+  press does the Click slot. There, **None** and **DPI Cycle** are separate choices: None does
+  nothing, and DPI Cycle makes MacRazer MX cycle the DPI stage itself. A new DPI button
+  gesture starts with DPI Cycle.
 - Like every remap, it works while MacRazer MX is running and the mouse is connected, and needs
   Accessibility. It only watches for pointer drags while at least one button is a gesture.
 
@@ -386,10 +387,13 @@ stops acting on the DPI button and reports it as "private keys" in HID input rep
 - **Gesture: hold the button until the gesture starts (about a second), then swipe.** It is a
   true hold that lasts until you release. Mission Control, App Exposé and Spaces follow the
   pointer as in [Gesture mode](#gesture-mode), and other actions fire once.
-- **A short press** runs the gesture's **Click** slot. When Click is None, which the editor
-  shows as **DPI Cycle**, MacRazer MX cycles the DPI stage itself, because in driver mode the
-  firmware no longer does: it reads the stage table, moves to the next stage (the first after
-  the last) and writes it back.
+- **A short press** runs the gesture's **Click** slot, where **DPI Cycle** and **None** are
+  separate choices. With DPI Cycle, what a new gesture starts with, MacRazer MX cycles the DPI
+  stage itself, because in driver mode the firmware no longer does: it reads the stage table,
+  moves to the next stage (the first after the last) and writes it back. With None a short
+  press does nothing and the DPI stage stays where it is, so the button is only your gesture.
+  A swipe direction can hold DPI Cycle too. A gesture saved by an earlier build with Click on
+  None keeps None.
 - **Other software actions** on the DPI button (a media key, Double Click, a key the mouse
   can't type) fire on the short press. A long press does nothing for them.
 - **Functions the mouse carries out itself** in normal mode (an onboard keyboard shortcut or
@@ -402,6 +406,11 @@ How driver mode is handled:
   action MacRazer MX carries out, and Accessibility and Input Monitoring are both granted
   (without them the button keeps cycling DPI in the firmware rather than doing nothing). The
   Buttons page shows where it stands, and why when it couldn't be set.
+- **No relaunch after granting a permission.** The app looks at the permissions again when
+  the popover or the Buttons page opens, and every 3 seconds while one of the two is all that
+  is missing, so driver mode starts soon after you grant it. macOS sometimes applies an Input
+  Monitoring grant to a running app only once it is reopened. If the app still can't open the
+  mouse after the grant, the Buttons page says to quit and reopen MacRazer MX.
 - **It doesn't last, and the app keeps it up.** The mouse falls back to normal mode when it
   sleeps, reconnects or is switched off and on. The app sets it again on each new connection and
   after each wake (reading first, so a mouse already in it isn't written), and reads it about
@@ -561,7 +570,8 @@ MacRazer and may not match this fork's windows exactly.
   requests it on launch; grant it in System Settings › Privacy & Security › Input Monitoring.
   It is also what lets the app see the DPI button's F20 key (Basilisk V3 X) and its private
   keys in driver mode (Cobra). Without it, the Cobra's DPI button keeps cycling DPI in the
-  firmware.
+  firmware. Granted while the app runs, it is picked up without a relaunch, unless macOS holds
+  it back until the app is reopened, which the Buttons page then says.
 - **Accessibility** is required for button remapping, gestures and scroll reversal (the event
   tap). A DPI button action on the Cobra needs it and Input Monitoring together. The remap screen has a button to open the right settings pane.
 - **Bluetooth**, the first time it finds a mouse on Bluetooth.
