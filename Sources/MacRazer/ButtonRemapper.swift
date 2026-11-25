@@ -168,14 +168,23 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     private var dpiObservers = Set<AnyCancellable>()
     private let defaults: UserDefaults
     private let actionEmitter: ((RemapAction) -> Void)?
-    /// Seconds on a monotonic clock, for a latched hold's window. Tests pass their own, so
-    /// the window can pass without waiting for it.
+    /// Where a gesture's system swipes go as they follow the pointer (`DockSwipeTracker`).
+    /// Nil leaves them keyboard shortcuts that fire once, as every other slot's action does.
+    private let dockSwipes: DockSwipeOutput?
+    /// Seconds on a monotonic clock, for a latched hold's window and a swipe's velocity.
+    /// Tests pass their own, so the window can pass without waiting for it.
     private let clock: () -> TimeInterval
 
+    /// `dockSwipes`: by default the session's own (`DockSwipeOutput.system`), but only when
+    /// actions are posted for real too. A test that catches the actions (`actionEmitter`)
+    /// never reaches the session: it passes its own recorder, or has no swipes follow the
+    /// pointer.
     init(defaults: UserDefaults = .standard, actionEmitter: ((RemapAction) -> Void)? = nil,
+         dockSwipes: DockSwipeOutput? = nil,
          clock: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults
         self.actionEmitter = actionEmitter
+        self.dockSwipes = dockSwipes ?? (actionEmitter == nil ? .system(userData: Self.magic) : nil)
         self.clock = clock
     }
 
@@ -194,25 +203,43 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         let trigger: Int
         let bindings: GestureBindings
         var recognizer = GestureRecognizer()
+        /// The swipe that follows the pointer when the hold heads for a system swipe. Nil when
+        /// none of its directions is one, or system swipes don't follow the pointer here
+        /// (`dockSwipes`): the hold is then only `recognizer`'s.
+        var swipe: DockSwipeTracker? = nil
         /// Set for a latched hold: the DPI button of a mouse that only reports a click
         /// (`dpiButtonActsOnRelease`). No release ends it: its swipe does, or this time on
         /// `clock` passing, which fires its click. Nil for a hold its button's release ends.
+        /// Once a swipe that follows the pointer has begun, the time it ends instead: when the
+        /// pointer has been still for `latchedSwipeStillness`, or at `latchedSwipeMaximum`.
         var latchDeadline: TimeInterval? = nil
     }
     /// The hold in progress, if any. One at a time: a new press ends it.
     ///
-    /// Whatever ends or replaces a latched hold stops its timer here, so every reset that
-    /// sets this to nil (the tap switched off or removed, a device change, pausing, waking,
-    /// the F20 assignment no longer confirmed, the action changing, a mouse button's press)
-    /// stops it too. Cheap enough for the pointer's rate: a hold mutated in place goes by
-    /// two nil checks, and with no latched hold the first is enough.
+    /// Whatever ends or replaces a hold stops its latched timer and cancels its dock swipe
+    /// here, so every reset that sets this to nil (the tap switched off or removed, a device
+    /// change, pausing, waking, the F20 assignment no longer confirmed, the action changing,
+    /// a mouse button's press) does too, and the Dock is never left halfway. The ends that
+    /// finish a swipe send theirs first (`endGesture`, `expireLatchedGesture`). Cheap enough
+    /// for the pointer's rate: a hold mutated in place goes by a few nil checks.
     private(set) var gestureHold: GestureHold? {
-        didSet { if latchTimer != nil, gestureHold?.latchDeadline == nil { cancelLatchTimer() } }
+        didSet {
+            if latchTimer != nil, gestureHold?.latchDeadline == nil { cancelLatchTimer() }
+            if openDockSwipe != nil, gestureHold?.swipe?.isSwiping != true { cancelOpenDockSwipe() }
+        }
     }
+    /// The last frame posted of a dock swipe that hasn't ended: what a reset cancels.
+    private var openDockSwipe: DockSwipe.Frame?
     /// How long a latched hold of the DPI button waits for its swipe after the F20 pulse.
     /// Long enough to start moving after the click, short enough that Click, which runs when
     /// it ends without one, doesn't feel late.
     static let latchedGestureWindow: TimeInterval = 0.6
+    /// A latched hold's swipe that follows the pointer has no release to end it: it ends
+    /// once the pointer has been still this long. Longer than the gap between two of a slow
+    /// hand's pointer events, short enough that the Dock finishes the swipe as the hand stops.
+    static let latchedSwipeStillness: TimeInterval = 0.12
+    /// And at the latest this long after it began, should the pointer never stop.
+    static let latchedSwipeMaximum: TimeInterval = 1.5
     /// Ends a latched hold when its window is over and the pointer has stopped moving, so no
     /// move would notice (`expireLatchedGesture`). On the main run loop, as the tap is. Nil
     /// with no latched hold. Readable so tests can see it waiting and fire it.
@@ -790,20 +817,32 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             GestureDebugLog.log("begin trigger=\(trigger)\(kind) replacing=\(gestureHold.map { String($0.trigger) } ?? "none")")
             debugMoveCount = 0
         }
+        let swipe = dockSwipeTracker(for: bindings)
         guard latched else {
-            gestureHold = GestureHold(trigger: trigger, bindings: bindings)
+            gestureHold = GestureHold(trigger: trigger, bindings: bindings, swipe: swipe)
             return
         }
-        gestureHold = GestureHold(trigger: trigger, bindings: bindings,
+        gestureHold = GestureHold(trigger: trigger, bindings: bindings, swipe: swipe,
                                   latchDeadline: clock() + Self.latchedGestureWindow)
         scheduleLatchTimer(after: Self.latchedGestureWindow)
     }
 
-    /// The pointer moved by (dx, dy), CGEvent deltas with y growing downward. Fires the
-    /// direction's action the first time the hold's movement is far enough, which also ends
-    /// a latched hold. Returns whether a hold of `trigger` is in progress, and so whether the
-    /// movement belongs to it: not once a latched hold's window is over, which this ends
-    /// (its click) without counting the move, in case the timer hasn't run yet.
+    /// The tracker for a hold of `bindings`: nil when no direction holds a system swipe, or
+    /// they don't follow the pointer here. The scale is the screen's as the hold starts.
+    private func dockSwipeTracker(for bindings: GestureBindings) -> DockSwipeTracker? {
+        guard let dockSwipes else { return nil }
+        let slots = SystemSwipeSlots(bindings)
+        guard !slots.isEmpty else { return nil }
+        return DockSwipeTracker(slots: slots, scale: dockSwipes.scale(), at: clock())
+    }
+
+    /// The pointer moved by (dx, dy), CGEvent deltas with y growing downward. When the hold
+    /// heads for a system swipe, the swipe follows it (`DockSwipeTracker`); otherwise this
+    /// fires the direction's action the first time the hold's movement is far enough, which
+    /// also ends a latched hold. Returns whether a hold of `trigger` is in progress, and so
+    /// whether the movement belongs to it: not once a latched hold's window is over, which
+    /// this ends (its click, or its swipe's end) without counting the move, in case the
+    /// timer hasn't run yet.
     @discardableResult
     func moveGesture(dx: Double, dy: Double, trigger: Int) -> Bool {
         guard gestureHold?.trigger == trigger else { return false }
@@ -812,6 +851,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             debugMoveCount += 1
             if debugMoveCount <= 5 { GestureDebugLog.log("move #\(debugMoveCount) dx=\(dx) dy=\(dy)") }
         }
+        if gestureHold?.swipe != nil, moveDockSwipe(dx: dx, dy: dy) { return true }
         // Mutated in place: a copy of the hold per event would be wasted work at this rate.
         if let direction = gestureHold?.recognizer.move(dx: dx, dy: dy), let hold = gestureHold {
             GestureDebugLog.log("FIRE \(direction) after \(debugMoveCount) moves net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) action=\(hold.bindings.action(for: direction).label)\(hold.latchDeadline != nil ? ", ends the latched hold" : "")")
@@ -822,14 +862,65 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    /// Ends a latched hold whose window is over at `now` (on `clock`), firing its click: a
-    /// swipe would have ended it already. The timer runs this, and so does every pointer move
-    /// of the hold, so a timer held up behind other work can't let a late move count. Returns
-    /// false, changing nothing, when there is no latched hold or its window is still open.
+    /// Feeds a movement to the hold's dock swipe and posts what it makes. Returns whether
+    /// the swipe has the movement, so the discrete swipe mustn't see it: the hold has begun
+    /// one. Before that (the dead zone) and when the hold went another way, it's still
+    /// `recognizer`'s, which has to count it from the press.
+    private func moveDockSwipe(dx: Double, dy: Double) -> Bool {
+        let now = clock()
+        let frame = gestureHold?.swipe?.move(dx: dx, dy: dy, at: now)
+        guard gestureHold?.swipe?.isSwiping == true, let began = gestureHold?.swipe?.beganAt else { return false }
+        if let frame { sendDockSwipe(frame) }
+        // A latched hold has no release: its swipe ends when the pointer stops. The deadline
+        // moves with every movement; the timer finds it moved and waits for the rest
+        // (`latchTimerFired`), so no timer is made per event.
+        if gestureHold?.latchDeadline != nil {
+            let deadline = min(now + Self.latchedSwipeStillness, began + Self.latchedSwipeMaximum)
+            gestureHold?.latchDeadline = deadline
+            // At its start the deadline can come before the window's end the timer waits for.
+            if frame?.phase == .began { scheduleLatchTimer(after: max(deadline - now, 0.01)) }
+        }
+        return true
+    }
+
+    /// Posts a dock swipe frame, keeping the swipe that's open for a reset to cancel.
+    private func sendDockSwipe(_ frame: DockSwipe.Frame) {
+        switch frame.phase {
+        case .began:
+            GestureDebugLog.log("SWIPE began \(frame.kind) progress=\(frame.progress) after \(debugMoveCount) moves")
+            openDockSwipe = frame
+        case .changed:
+            openDockSwipe = frame
+        case .ended, .cancelled:
+            GestureDebugLog.log("SWIPE \(frame.phase) \(frame.kind) progress=\(frame.progress) velocity=\(frame.velocity) after \(debugMoveCount) moves")
+            openDockSwipe = nil
+        }
+        dockSwipes?.send(frame)
+    }
+
+    /// A hold ended early with its swipe still open: cancel it, so the Dock snaps back
+    /// instead of staying halfway.
+    private func cancelOpenDockSwipe() {
+        guard let open = openDockSwipe else { return }
+        sendDockSwipe(DockSwipe.Frame(kind: open.kind, phase: .cancelled, progress: open.progress))
+    }
+
+    /// Ends a latched hold whose time is over at `now` (on `clock`). Before its swipe began,
+    /// that's the window's end, which fires its click: a discrete swipe would have ended it
+    /// already. After, the pointer has stopped (or the swipe ran its longest), which ends
+    /// the swipe as a release would, with the velocity it had when it last moved. The timer
+    /// runs this, and so does every pointer move of the hold, so a timer held up behind other
+    /// work can't let a late move count. Returns false, changing nothing, when there is no
+    /// latched hold or its time isn't over.
     @discardableResult
     func expireLatchedGesture(now: TimeInterval) -> Bool {
         guard var hold = gestureHold, let deadline = hold.latchDeadline, now >= deadline else { return false }
         GestureDebugLog.log("EXPIRE latched trigger=\(hold.trigger) late=\(String(format: "%.3f", now - deadline))s moves=\(debugMoveCount) net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) click=\(hold.bindings.click.label)")
+        if let lastMove = hold.swipe?.lastMoveAt, let end = hold.swipe?.end(at: lastMove) {
+            sendDockSwipe(end)
+            gestureHold = nil
+            return true
+        }
         gestureHold = nil
         if hold.recognizer.end() { apply(hold.bindings.click) }
         return true
@@ -860,7 +951,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         latchTimer = nil
     }
 
-    /// The gesture button came back up: fire the click if no swipe fired. Returns whether a
+    /// The gesture button came back up: end the swipe that follows the pointer, so the Dock
+    /// finishes it or snaps back, or else fire the click if no swipe fired. Returns whether a
     /// hold of `trigger` was in progress.
     @discardableResult
     func endGesture(trigger: Int) -> Bool {
@@ -869,6 +961,12 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             return false
         }
         GestureDebugLog.log("end trigger=\(trigger) moves=\(debugMoveCount) net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) fired=\(hold.recognizer.fired.map { "\($0)" } ?? "none")")
+        // Sent before the hold goes, which would otherwise cancel it.
+        if let end = hold.swipe?.end(at: clock()) {
+            sendDockSwipe(end)
+            gestureHold = nil
+            return true
+        }
         gestureHold = nil
         if hold.recognizer.end() { apply(hold.bindings.click) }
         return true

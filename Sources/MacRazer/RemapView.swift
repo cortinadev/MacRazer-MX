@@ -126,12 +126,18 @@ struct RemapView: View {
 
     /// How the gesture editor says a gesture is made. A mouse button's is held while the mouse
     /// moves. The DPI button of a mouse that only reports a click (`dpiButtonActsOnRelease`)
-    /// can't be held, so its gesture is a click and then the movement.
-    nonisolated static func gestureEditorExplanation(clickThenSwipe: Bool) -> String {
-        clickThenSwipe
+    /// can't be held, so its gesture is a click and then the movement. `followsPointer`: the
+    /// four system swipes follow the pointer on this Mac (`DockSwipe.isSupported`), so the
+    /// text says so, and what ends them.
+    nonisolated static func gestureEditorExplanation(clickThenSwipe: Bool,
+                                                     followsPointer: Bool = DockSwipe.isSupported) -> String {
+        let swipes = "Mission Control, App Exposé, Space Left and Space Right follow the pointer"
+        return clickThenSwipe
             ? "Click the DPI button, then move the mouse up, down, left or right. "
+                + (followsPointer ? swipes + " until it stops. " : "")
                 + "If you don't move the mouse, Click runs."
             : "Hold the button and move the mouse up, down, left or right. "
+                + (followsPointer ? swipes + " while you hold it. " : "")
                 + "Press and release it without moving to click."
     }
 

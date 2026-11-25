@@ -26,6 +26,14 @@ starting 2026-11-25. Its source is at
  "Worker"), so Send and the usage stats are off in every build. Where a report can't be sent,
  the app points to the fork's GitHub issues instead of upstream's email address.
 
+The fork's own research credit:
+- **Dock-swipe research:** [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) by
+ **[Noah Nübling](https://github.com/noah-nuebling)** documents the events macOS uses for the
+ trackpad's Spaces and Mission Control swipes (their types, fields, phases and scale), and
+ [InstantSpaceSwitcher](https://github.com/jurplel/InstantSpaceSwitcher) by
+ **[@jurplel](https://github.com/jurplel)** confirmed their direction. The gesture swipes that
+ follow the pointer are implemented here from that format; no code from either is bundled.
+
 The attributions below are upstream's, kept as they were, and so are the About window's credits.
 
 ## Attribution
