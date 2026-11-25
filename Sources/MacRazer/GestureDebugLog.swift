@@ -39,3 +39,33 @@ enum GestureDebugLog {
         handle?.write(Data(line.utf8))
     }
 }
+
+import IOKit.hid
+
+/// With the trace on, also record what the mouse itself reports at the HID level, apart from
+/// pointer and wheel movement: a button the firmware handles on its own (the Cobra's DPI
+/// button) may still say something when it goes down, which only shows here.
+enum GestureDebugHIDWatch {
+    nonisolated(unsafe) private static var manager: IOHIDManager?
+
+    /// Main thread, once. Needs Input Monitoring, which the F20 bridge needs anyway.
+    static func startIfEnabled() {
+        guard GestureDebugLog.enabled, manager == nil else { return }
+        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        let vendors = [0x1532, 0x068E].map { [kIOHIDVendorIDKey: $0] as CFDictionary }
+        IOHIDManagerSetDeviceMatchingMultiple(manager, vendors as CFArray)
+        IOHIDManagerRegisterInputValueCallback(manager, { _, _, _, value in
+            let element = IOHIDValueGetElement(value)
+            let page = IOHIDElementGetUsagePage(element)
+            let usage = IOHIDElementGetUsage(element)
+            // Generic Desktop is the pointer and wheel, at the polling rate: not wanted.
+            guard page != kHIDPage_GenericDesktop else { return }
+            GestureDebugLog.log(String(format: "HID page=%02x usage=%02x value=%ld len=%ld",
+                                       page, usage, IOHIDValueGetIntegerValue(value), IOHIDValueGetLength(value)))
+        }, nil)
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+        let result = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        GestureDebugLog.log("HID watch open result=\(result)")
+        self.manager = manager
+    }
+}

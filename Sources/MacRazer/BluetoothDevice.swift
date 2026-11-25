@@ -415,6 +415,11 @@ extension BluetoothDevice: CBCentralManagerDelegate, CBPeripheralDelegate {
             if matches { onStateChange?() }
             return
         }
+        if GestureDebugLog.enabled, pending == nil || characteristic.uuid != notifyUUID {
+            let hex = value.map { String(format: "%02x", $0) }.joined(separator: " ")
+            let uuid = characteristic.uuid.uuidString
+            DispatchQueue.main.async { GestureDebugLog.log("BLE unsolicited \(uuid): \(hex)") }
+        }
         guard characteristic.uuid == notifyUUID, let pending else { return }
         pending.assembler.add(value)
         if pending.assembler.isComplete { finish(pending, error: nil) }

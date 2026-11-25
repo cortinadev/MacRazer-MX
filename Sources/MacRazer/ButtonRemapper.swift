@@ -336,6 +336,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     // MARK: - Lifecycle
 
     func start() {
+        GestureDebugHIDWatch.startIfEnabled()
         loadMappings()
         loadDpiSoftwareAction()
         refreshAccessibility(prompt: false)
