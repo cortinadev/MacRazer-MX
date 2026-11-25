@@ -9,7 +9,9 @@
 > **What it adds**
 > - **Gesture mode** for the mouse's extra buttons: hold a button and move the mouse up, down,
 >   left or right to run a different action for each direction (Mission Control, App Exposé,
->   a Space to the left or right by default). See [Gesture mode](#gesture-mode).
+>   a Space to the left or right by default). Those four follow the pointer like a trackpad
+>   swipe: the Space slides and Mission Control opens as you move, and it finishes or snaps
+>   back when you let go. See [Gesture mode](#gesture-mode).
 > - **DPI button remap** on the Razer Cobra HyperSpeed over Bluetooth, as well as the Basilisk
 >   V3 X HyperSpeed, where upstream only has it. The button can take any action, a gesture
 >   included. See [The DPI button](#the-dpi-button).
@@ -30,7 +32,8 @@
 >
 > The gesture and DPI button features were first exercised by unit tests only. The DPI button
 > remap has since been tested on a real Cobra HyperSpeed over Bluetooth (details
-> [below](#the-dpi-button)). The side-button gesture has not been tried on hardware beyond that.
+> [below](#the-dpi-button)). Gestures that follow the pointer have been tried on a real mouse on
+> macOS 26.3 (see [Gesture mode](#gesture-mode)); the rest of gesture mode has not.
 
 A native menu bar app to control Razer mice on macOS. Razer does ship a Synapse for Mac now,
 but its [supported-device list](https://mysupport.razer.com/app/answers/detail/a_id/14809/~/razer-synapse-for-mac-supported-and-compatible-devices)
@@ -144,8 +147,8 @@ goes to two columns. Each device gets a card, and a keyboard can follow the mous
 The table is upstream's, built from reports sent to upstream. "Maintainer" means SorcRR, and
 nothing here has been re-verified for MacRazer MX. Its two additions, gestures and the DPI
 button remap, are not in this table. The DPI button remap has been tried on one real Cobra
-HyperSpeed over Bluetooth (see [The DPI button](#the-dpi-button)); gestures are otherwise
-covered by unit tests.
+HyperSpeed over Bluetooth (see [The DPI button](#the-dpi-button)). Gestures that follow the
+pointer have been tried on a real mouse on macOS 26.3 and are otherwise covered by unit tests.
 
 "Verified" below means someone ran the CLI probes or the in-app test against the mouse and
 posted the output, not that the protocol tables say it should work. Where nobody has, the row
@@ -293,12 +296,35 @@ moving and the **Click** action runs.
   still middle-clicks).
 - **Each of the five slots** takes any ordinary action: a shortcut preset, a recorded shortcut,
   a mouse click, a media key, or None. A gesture can't be nested inside a gesture.
-- **The swipe fires once per hold**, as soon as the movement along the stronger axis reaches 50
-  points, not at release. Going right and then back again counts as no movement, so it is
-  still a click.
-- **The system actions are keyboard shortcuts.** MacRazer MX sends the standard macOS shortcuts
-  (⌃↑, ⌃↓, ⌃←, ⌃→), so they must be switched on in System Settings › Keyboard › Keyboard
-  Shortcuts › Mission Control. If one is off, that swipe does nothing.
+- **Other actions fire once per hold**, as soon as the movement along the stronger axis reaches
+  50 points, not at release. This is what a custom shortcut, a media key or a mouse click in a
+  slot does. Going right and then back again counts as no movement, so it is still a click.
+- **Mission Control, App Exposé, Space Left and Space Right follow the pointer.** In a gesture,
+  these four presets don't type a shortcut. MacRazer MX sends the same kind of swipe events a
+  trackpad does, so the Spaces transition, Mission Control or App Exposé moves with the pointer
+  while you hold the button, and finishes or snaps back when you release. A flick finishes it
+  even if it hasn't gone far; moving back to where you started cancels it.
+  - Nothing happens until the pointer has moved 12 points. Then the stronger axis is locked for
+    the rest of the hold, as on a trackpad.
+  - Which way is forward follows your slots: moving towards the slot that holds Space Left goes
+    to the Space on the left, whichever slot that is. You can move back past the start into the
+    opposite slot's swipe only when that slot holds the same swipe the other way (Space Right
+    opposite Space Left, App Exposé opposite Mission Control). Otherwise the swipe stops at its
+    start: you can take it back, but not turn it into something else.
+  - How far you have to move scales with the screen under the pointer: about one screen width
+    for a Space, and the screen's height for Mission Control. These numbers are untuned
+    starting points.
+  - **On macOS 27 and later** these events are ignored, so the four presets go back to sending
+    the keyboard shortcuts (⌃↑, ⌃↓, ⌃←, ⌃→). They then fire once at 50 points like any other
+    action, and have to be switched on in System Settings › Keyboard › Keyboard Shortcuts ›
+    Mission Control.
+  - The event format is undocumented macOS behaviour. It was learned from
+    [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) (see
+    [NOTICE.md](NOTICE.md)) and written independently here; no code from it is used.
+  - **Tested on real hardware**, on macOS 26.3: the Spaces animation follows the pointer for
+    horizontal swipes, and a vertical swipe was driven. **Not confirmed: App Exposé.** Its
+    trackpad gesture is off by default (System Settings › Trackpad › More Gestures) and may
+    need turning on.
 - **The pointer is not frozen** while you hold the button; it moves as usual. The button's own
   press, drag events and release are swallowed, so the app under the pointer doesn't see them.
 - **Only the extra buttons** (the ones macOS reports as "other" mouse buttons) can be gestures,
@@ -336,20 +362,29 @@ How it works:
   it reads the entry back and reports a failure if it differs. **DPI Cycle (default)** writes
   the factory function back. The write goes to the mouse's onboard profile 1, so the app only
   writes while the mouse is on that profile and asks you to switch to it otherwise.
-- A **DPI-button gesture on the Cobra is "click, then swipe", not "hold and swipe".** The
-  Cobra's firmware only acts on the release of a short press of the DPI button, whatever
-  function is programmed (a key or a mouse button). The app sees F20 go down and up about 50 ms
-  apart however long you held the button, and a long hold often sends nothing, so holding is
-  not possible on this button. Instead, click the DPI button: that opens a 0.6 second window.
-  Move the pointer 50 points in a direction during it and that direction's action runs at once,
-  while you are still moving. If the window passes with no swipe, the **Click** slot's action
-  runs. Click starts as **None**, because software can't cycle the DPI. Ordinary buttons (the
-  side buttons, the wheel click) keep true hold and swipe. A mouse flagged otherwise, the
-  Basilisk V3 X HyperSpeed (not verified), keeps the hold behaviour for the DPI button.
+- A **DPI-button gesture on the Cobra is "click, then swipe", not "hold and swipe".** A trace
+  of the raw HID reports and the Bluetooth notifications on a real Cobra showed that while the
+  DPI button is held the mouse reports nothing at all, on any channel. A short press produces
+  only an F20 pulse of about 50 ms when you let go, and a long hold produces nothing, so a hold
+  can never be detected on this button over Bluetooth. Instead, click the DPI button: that opens
+  a 0.6 second window, which is the time you have to start moving.
+  - If you move 50 points in it and that direction's slot is not one of the four system
+    swipes, that action runs at once.
+  - If it is one of them (Mission Control, App Exposé, Space Left, Space Right), the swipe
+    follows the pointer as in [Gesture mode](#gesture-mode). With no button to release, it
+    ends when the pointer has been still for about 0.12 seconds, or after 1.5 seconds at most.
+  - If the window passes with no movement, the **Click** slot's action runs. Click starts as
+    **None**, because software can't cycle the DPI.
+  - For hold and drag, use a side button or the wheel click, which keep true hold and swipe. A
+    mouse flagged otherwise, the Basilisk V3 X HyperSpeed (not verified), keeps the hold
+    behaviour for the DPI button. The 2.4 GHz dongle has not been investigated.
 - **Gesture trace.** If a gesture misbehaves, run
   `defaults write com.cortinadev.macrazer-mx gestureDebugLog -bool true` and relaunch. The app
-  then writes a trace of gesture holds, F20 timing and pointer movement (never typed text) to
-  `~/Library/Logs/MacRazer MX/gesture.log`. Attach it to an issue. Turn it off with
+  then writes a trace of gesture holds, F20 timing, pointer movement, what the mouse reports at
+  the HID level and any unsolicited Bluetooth notifications to
+  `~/Library/Logs/MacRazer MX/gesture.log`. It never records which key a keyboard typed, only
+  F13 to F20. The HID part needs **Input Monitoring**, so relaunch after granting it. Attach
+  the log to an issue. Turn it off with
   `defaults delete com.cortinadev.macrazer-mx gestureDebugLog`.
 - **Not supported:** the USB cable and the 2.4 GHz dongle. There the firmware handles the DPI
   button onboard, and the command to rewrite it over USB isn't implemented.

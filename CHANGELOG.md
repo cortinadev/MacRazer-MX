@@ -12,11 +12,29 @@ expect rough edges until 1.0.
   direction. Press and release without moving and its Click action runs. The defaults are
   Mission Control up, App Exposé down, Space Left and Space Right, and Click is what the button
   did before. Each of the five slots takes any normal action: a shortcut preset, a recorded
-  shortcut, a mouse click, a media key or none. The swipe fires once per hold, when the
-  movement along the stronger axis reaches 50 points. The system actions go out as the standard
-  shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), so they have to be on in System Settings › Keyboard › Keyboard
-  Shortcuts › Mission Control. The pointer isn't frozen while you hold the button. Only tested
-  with unit tests so far, not on a mouse.
+  shortcut, a mouse click, a media key or none. Those other actions fire once per hold, when
+  the movement along the stronger axis reaches 50 points. Mission Control, App Exposé and the
+  two Space presets follow the pointer instead (see the entry below). The pointer isn't frozen
+  while you hold the button.
+- **Gestures that follow the pointer.** In a gesture, Mission Control, App Exposé, Space Left
+  and Space Right no longer type a keyboard shortcut. They are driven as the trackpad's own
+  dock swipe events, so the Spaces transition, Mission Control or App Exposé follows the
+  pointer while the button is held, and the Dock finishes it or snaps it back when you let go.
+  After a 12 point dead zone the stronger axis is locked. The direction follows your slots:
+  moving towards the slot that holds Space Left goes to the Space on the left. Moving back
+  past the start goes into the opposite slot's swipe only when that is the same swipe the
+  other way, and otherwise stops at the start. Letting go sends the end with the hand's
+  velocity, so a flick finishes a short swipe, and cancels when the pointer was coming back.
+  The end is sent again after 0.2 s and 0.5 s in case the Dock misses it, and a hold that
+  ends early cancels an open swipe. A custom shortcut, a media key or a mouse click in a slot
+  still fires once at 50 points. On macOS 27, which ignores these event fields, the four
+  presets stay keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), which have to be on in System Settings ›
+  Keyboard › Keyboard Shortcuts › Mission Control. The event format is undocumented macOS
+  behaviour, learned from Mac Mouse Fix (credited in NOTICE.md) and written independently.
+  Confirmed on a real mouse on macOS 26.3: the Spaces animation follows the pointer for
+  horizontal swipes and a vertical swipe was driven. The constants have not been tuned, and
+  App Exposé is not confirmed (its trackpad gesture is off by default in System Settings ›
+  Trackpad › More Gestures and may need turning on).
 - **An App Exposé ⌃↓ shortcut preset.** It's in the shortcut list of every button, and it's the
   gesture's default for a swipe down.
 - **The DPI button can be remapped on the Cobra HyperSpeed over Bluetooth.** Until now only the
@@ -26,11 +44,20 @@ expect rough edges until 1.0.
   keyboard is caught too while one is set, and Input Monitoring may be needed. A DPI-button
   gesture starts with None as its Click action. Tested on a real Cobra over Bluetooth: it
   accepts the button's table entry (0x60), the read before the write and the read back work,
-  and the F20 binding reaches macOS. The Cobra's firmware only acts on the release of a short
-  press of the DPI button, so there a gesture is "click, then swipe": the click opens a 0.6
-  second window, a 50-point swipe in it runs that direction's action at once, and with no swipe
-  the Click action runs. Side buttons and the wheel click keep hold and swipe. The USB cable
-  and the 2.4 GHz dongle aren't supported for this.
+  and the F20 binding reaches macOS. A raw HID and Bluetooth trace on the real mouse shows it
+  reports nothing at all while the DPI button is held, and only a 50 ms F20 pulse at the
+  release of a short press, so a hold can't be detected on that button over Bluetooth. There a
+  gesture is "click, then swipe": the click opens a 0.6 second window for the movement to
+  start. A 50-point swipe in it runs that direction's action at once, or, for Mission Control,
+  App Exposé and the Spaces, starts a swipe that follows the pointer and ends when it has been
+  still for about 0.12 s or after 1.5 s at most. With no movement the Click action runs. For
+  hold and drag, use a side button or the wheel click. The USB cable isn't supported for this,
+  and the 2.4 GHz dongle has not been investigated.
+- **A gesture trace for bug reports.** The hidden `gestureDebugLog` default now also records
+  what the mouse reports at the HID level and any unsolicited Bluetooth notifications, next to
+  the gesture holds, F20 timing and pointer movement. It never records which key a keyboard
+  typed, only F13 to F20. It needs Input Monitoring, and a relaunch after the permission is
+  granted.
 
 - **More mice from test reports.**
   - **Polling confirmed with the newer command** on the Viper 8KHz, both Basilisk V4 Pro
