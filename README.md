@@ -333,7 +333,8 @@ How it works:
 - **Safety.** Before every write the app reads the entry, and if it can't confirm that the entry
   is the DPI button, or doesn't recognise what is saved there, it writes nothing. After a write
   it reads the entry back and reports a failure if it differs. **DPI Cycle (default)** writes
-  the factory function back.
+  the factory function back. The write goes to the mouse's onboard profile 1, so the app only
+  writes while the mouse is on that profile and asks you to switch to it otherwise.
 - A **DPI-button gesture** is driven by F20 going down and up, plus the pointer's movement. Its
   Click slot starts as **None**, because software can't cycle the DPI.
 - **Not supported:** the USB cable and the 2.4 GHz dongle. There the firmware handles the DPI

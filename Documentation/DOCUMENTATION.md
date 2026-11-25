@@ -562,6 +562,10 @@ of that.
  per connection (`dpiBridgeRestoreAttempted`). `dpiBridgeStatus` is the page's one-line state.
 - **Safety rules for the firmware write** (`BLEProtocol.parseDpiButtonBinding`,
  `BluetoothDevice.writeDpiCycleBinding(_:read:write:)`):
+ 0. The active onboard profile is read first (`readActiveSlot`). Writes go to slot 1 while reads
+ look at the slot in use, so on any other profile the write throws
+ `DPIButtonEntryError.otherProfileInUse(slot)` and nothing is read or written. A mouse that
+ doesn't answer is treated as being on profile 1.
  1. The entry is read first. Nothing is written unless the read succeeds and parses. A reply
  that isn't a read of entry 0x60, or holds something that isn't a `DPIButtonBinding` (a macro,
  a profile switch), throws `DPIButtonEntryError.unrecognized`. With the function-table layout
