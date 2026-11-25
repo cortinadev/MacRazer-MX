@@ -136,11 +136,18 @@ struct RemapView: View {
         return longPress
             ? "Hold the DPI button until the gesture starts (about a second), then move the mouse up, "
                 + "down, left or right. " + (followsPointer ? swipes : "") + "A short press does Click. "
-                + "Holding it without moving does Hold when you let go."
+                + "Holding it without moving does Hold when you let go. " + dpiButtonTimingNote
             : "Hold the button and move the mouse up, down, left or right. "
                 + (followsPointer ? swipes : "")
                 + "Press and release it without moving to click."
     }
+
+    /// Why a gesture on this DPI button can't start the instant it is pressed, said where the
+    /// button is set up: the mouse itself only reports it at those two moments (seen on the Cobra
+    /// HyperSpeed; Synapse gets nothing earlier either), which no setting changes.
+    nonisolated static let dpiButtonTimingNote = "This mouse only reports its DPI button when a short "
+        + "press is let go, or about a second into a hold, so nothing can start the instant you press "
+        + "it. For a gesture that starts at once, use a side button or the wheel click."
 
     /// The help under the DPI button's menu. On a mouse with private keys it says how MacRazer
     /// takes the button over while it runs, and gives it back, and how a gesture is made there.

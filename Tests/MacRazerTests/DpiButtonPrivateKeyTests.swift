@@ -1100,7 +1100,12 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         let editor = RemapView.gestureEditorExplanation(longPress: true, followsPointer: false)
         XCTAssertEqual(editor, "Hold the DPI button until the gesture starts (about a second), then move the mouse up, "
                        + "down, left or right. A short press does Click. Holding it without moving does Hold "
-                       + "when you let go.")
+                       + "when you let go. " + RemapView.dpiButtonTimingNote)
+        // Said where the button is set up: the mouse reports it late, and which buttons don't.
+        XCTAssertTrue(RemapView.dpiButtonTimingNote.contains("about a second into a hold"))
+        XCTAssertTrue(RemapView.dpiButtonTimingNote.contains("side button or the wheel click"))
+        XCTAssertFalse(RemapView.gestureEditorExplanation(longPress: false, followsPointer: false)
+            .contains(RemapView.dpiButtonTimingNote), "a side button reports at once, so the note isn't its")
         XCTAssertFalse(RemapView.gestureEditorExplanation(longPress: false, followsPointer: false).contains("does Hold"))
         let help = RemapView.dpiButtonHelpText(privateKeys: true)
         XCTAssertTrue(help.contains("the mouse is switched to a mode where MacRazer handles the DPI button while it runs."))
