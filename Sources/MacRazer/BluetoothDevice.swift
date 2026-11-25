@@ -183,25 +183,49 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
         }
     }
 
-    /// Read the Basilisk V3 X HyperSpeed's dedicated DPI Cycle assignment. This is a
-    /// model-specific control layered on the shared BLE framing; ordinary Razer reports
-    /// continue to use `sendWithRetry` above.
+    /// Read the DPI button's assignment (entry 0x60, on a mouse with
+    /// `RazerDevices.supportsDpiButtonBinding`). This is a control layered on the shared BLE
+    /// framing; ordinary Razer reports continue to use `sendWithRetry` above. Throws
+    /// `BLEProtocol.DPIButtonEntryError` for a reply this app doesn't understand.
     func readDpiCycleBinding() throws -> BLEProtocol.DPIButtonBinding {
-        let request = BLEProtocol.Request(key: .dpiButtonGet, payload: [], reply: .ack)
-        let payload = try RazerRetry.run(attempts: HIDDevice.defaultAttempts) { try exchange(request) }
-        return try BLEProtocol.parseDpiButtonBinding(payload)
+        try BLEProtocol.parseDpiButtonBinding(readDpiCycleEntry())
     }
 
-    /// Write a DPI Cycle assignment and verify the mouse's readback before returning. A
-    /// software action is represented by the reserved F20 keyboard usage and is interpreted
-    /// by ButtonRemapper while this app is running.
+    /// Entry 0x60 as the mouse sent it, retried like the other reads.
+    private func readDpiCycleEntry() throws -> Data {
+        let request = BLEProtocol.Request(key: .dpiButtonGet, payload: [], reply: .ack)
+        return try RazerRetry.run(attempts: HIDDevice.defaultAttempts) { try exchange(request) }
+    }
+
+    /// Write the DPI button's assignment (`writeDpiCycleBinding`). A software action is the
+    /// reserved F20 keyboard usage, which ButtonRemapper turns into the action while this app
+    /// is running.
     func setDpiCycleBinding(_ binding: BLEProtocol.DPIButtonBinding) throws {
-        let request = BLEProtocol.Request(key: .dpiButtonSet,
-                                          payload: Array(BLEProtocol.dpiButtonPayload(for: binding)),
-                                          reply: .ack)
-        _ = try exchange(request)
-        guard try readDpiCycleBinding() == binding else {
-            throw HIDDevice.HIDError.badResponse
+        try Self.writeDpiCycleBinding(binding, read: { try readDpiCycleEntry() }, write: { payload in
+            _ = try exchange(BLEProtocol.Request(key: .dpiButtonSet, payload: payload, reply: .ack))
+        })
+    }
+
+    /// The DPI button's write, apart from the device so tests can drive it: `read` returns a
+    /// read of entry 0x60, `write` sends the set payload.
+    ///
+    /// The entry is read first, and nothing is written unless that read succeeds and parses
+    /// (`BLEProtocol.parseDpiButtonBinding`): the binding is enabled on a model where 0x60 is
+    /// not yet confirmed on hardware (the Cobra HyperSpeed), and a write must never land on an
+    /// entry that isn't the DPI button or holds something this app can't put back. That read's
+    /// errors are thrown unchanged, so they always mean nothing was written. The write itself
+    /// is sent once. Then the entry is read again, and anything but `binding` throws
+    /// `DPIButtonWriteError.notReadBack`; no second write follows a mismatch.
+    static func writeDpiCycleBinding(_ binding: BLEProtocol.DPIButtonBinding,
+                                     read: () throws -> Data, write: ([UInt8]) throws -> Void) throws {
+        _ = try BLEProtocol.parseDpiButtonBinding(read())
+        do {
+            try write(Array(BLEProtocol.dpiButtonPayload(for: binding)))
+        } catch {
+            throw BLEProtocol.DPIButtonWriteError.notTaken
+        }
+        guard (try? BLEProtocol.parseDpiButtonBinding(read())) == binding else {
+            throw BLEProtocol.DPIButtonWriteError.notReadBack
         }
     }
 
@@ -213,9 +237,9 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
         return try RazerRetry.run(attempts: HIDDevice.defaultAttempts) { try exchange(request) }
     }
 
-    /// The onboard profile slot in use, or 1 when the mouse doesn't say (the slot the Basilisk
-    /// V3 X's DPI Cycle write goes to). Retried, so one lost reply doesn't send a write to the
-    /// wrong slot.
+    /// The onboard profile slot in use, or 1 when the mouse doesn't say (the slot the DPI
+    /// button's write goes to, `BLEProtocol.Key.dpiButtonSet`). Retried, so one lost reply
+    /// doesn't send a write to the wrong slot.
     func readActiveSlot() -> UInt8 {
         let request = BLEProtocol.Request(key: .activeSlotGet, payload: [], reply: .ack)
         guard let payload = try? RazerRetry.run(attempts: HIDDevice.defaultAttempts, { try exchange(request) }),

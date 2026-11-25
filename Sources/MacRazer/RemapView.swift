@@ -127,12 +127,16 @@ struct RemapView: View {
     /// The DPI button's binding and model notes.
     @ViewBuilder private var dpiAndModelNotes: some View {
         if let controller {
-            DpiCycleBindingSection(controller: controller, remapper: remapper) {
-                recorderError = nil
-                recordingDpiCycleShortcut = true
-            }
+            DpiCycleBindingSection(controller: controller, remapper: remapper,
+                                   onRecordShortcut: {
+                                       recorderError = nil
+                                       recordingDpiCycleShortcut = true
+                                   },
+                                   // Shown once the mouse has taken F20 and the gesture is saved
+                                   // (`gestureEditorButton`), at once when it already was one.
+                                   onGesture: { editingGesture = ButtonRemapper.dpiButton })
         }
-        if remapper.isBasiliskV3XHyperSpeed { basiliskButtonLimits }
+        if remapper.hasMultiFunctionTrigger { multiFunctionTriggerNote }
     }
 
     private func endRecording() {
@@ -142,9 +146,9 @@ struct RemapView: View {
         recorderError = nil
     }
 
-    /// Who the recorded shortcut is for: "DPI Cycle", "Back (4)", "Button 6, Swipe Up".
+    /// Who the recorded shortcut is for: "DPI Button", "Back (4)", "Button 6, Swipe Up".
     private var recordingTarget: String {
-        if recordingDpiCycleShortcut { return "DPI Cycle" }
+        if recordingDpiCycleShortcut { return ButtonRemapper.label(for: ButtonRemapper.dpiButton) }
         if let slot = recordingSlot, let button = editingGesture {
             return "\(ButtonRemapper.label(for: button)), \(slot.title)"
         }
@@ -167,12 +171,13 @@ struct RemapView: View {
                         remapper.setGestureAction(action, for: slot, of: b)
                     }
                     if recordingDpiCycleShortcut {
-                        if let binding = dpiShortcutBinding(keyCode: keyCode, flags: flags), let controller {
-                            remapper.configureDpiCycle(binding, controller: controller)
+                        // The mouse types it itself when it can; otherwise MacRazer does, on F20.
+                        if let controller, remapper.configureDpiButton(action, controller: controller) {
                             recordingDpiCycleShortcut = false
                             recorderError = nil
                         } else {
-                            recorderError = "This key is not supported by the mouse's Bluetooth shortcut format."
+                            recorderError = "The mouse can't type this key itself, and MacRazer needs "
+                                + "Accessibility to type it for the mouse."
                         }
                     } else {
                         recordingButton = nil
@@ -240,11 +245,6 @@ struct RemapView: View {
             .frame(width: 320)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
         }
-    }
-
-    private func dpiShortcutBinding(keyCode: UInt16, flags: CGEventFlags) -> BLEProtocol.DPIButtonBinding? {
-        guard let usage = BLEProtocol.hidUsage(forMacKeyCode: keyCode) else { return nil }
-        return .keyboardShortcut(hidUsage: usage, modifiers: DPIShortcutModifiers.hidValue(from: flags))
     }
 
     private var header: some View {
@@ -360,7 +360,8 @@ struct RemapView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    private var basiliskButtonLimits: some View {
+    /// The Basilisk V3 X's Multi-function trigger (`RazerDevices.hasMultiFunctionTrigger`).
+    private var multiFunctionTriggerNote: some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "info.circle").foregroundStyle(Color.batteryMid)
             Text("The Multi-function/Hypershift trigger remains an onboard modifier. This firmware does not expose it for Bluetooth remapping. DPI Cycle can be configured through the mouse's Bluetooth control channel.")
@@ -387,6 +388,13 @@ private struct RemapActionMenu: View {
     let onRecord: () -> Void
     /// Offers Gesture… when set. Never inside a gesture: one nested in another can't fire.
     var onGesture: (() -> Void)?
+    /// More choices under Mouse, after the ones every button has: the DPI button's own
+    /// functions (Left Click, Scroll Up, …), which no `RemapAction` names.
+    var extraMouseChoices: [RemapMenuChoice] = []
+    /// Disables the choices only MacRazer can carry out (Double Click, Media, Gesture…). For
+    /// the DPI button while the event tap isn't available: the mouse runs its other choices.
+    var softwareChoicesDisabled = false
+    var width: CGFloat = 150
 
     private static let middleClick = RemapAction.mouseButton(button: 2, name: "Middle Click")
 
@@ -404,14 +412,23 @@ private struct RemapActionMenu: View {
                     Button(ownClick.label) { onPick(ownClick) }
                 }
                 Button("Double Click") { onPick(.doubleClick) }
+                    .disabled(softwareChoicesDisabled)
+                if !extraMouseChoices.isEmpty {
+                    Divider()
+                    ForEach(extraMouseChoices) { choice in
+                        Button(choice.title, action: choice.pick)
+                    }
+                }
             }
             Menu("Media") {
                 ForEach(ButtonRemapper.mediaOptions, id: \.code) { opt in
                     Button(opt.name) { onPick(.mediaKey(code: opt.code, name: opt.name)) }
                 }
             }
+            .disabled(softwareChoicesDisabled)
             if let onGesture {
                 Button("Gesture…", action: onGesture)
+                    .disabled(softwareChoicesDisabled)
             }
             Divider()
             Button("Record Custom Shortcut…", action: onRecord)
@@ -421,8 +438,15 @@ private struct RemapActionMenu: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .menuStyle(.borderlessButton)
-        .frame(width: 150)
+        .frame(width: width)
     }
+}
+
+/// A choice `RemapActionMenu` adds for something a `RemapAction` can't name.
+private struct RemapMenuChoice: Identifiable {
+    let title: String
+    let pick: () -> Void
+    var id: String { title }
 }
 
 private extension GestureSlot {
@@ -494,60 +518,55 @@ private struct SideButtonResetNotice: View {
     }
 }
 
+/// The DPI button, on a mouse that can rebind it over Bluetooth. The same menu as every other
+/// button, with the mouse's own functions added: what the mouse can do itself is written to it
+/// (DPI Cycle, its mouse buttons, keys it can type), and anything else makes it type F20 for
+/// MacRazer to turn into the action (`ButtonRemapper.dpiButtonAssignment`). The menu waits
+/// for a read of the mouse that parses, and every write reads the button again first.
 private struct DpiCycleBindingSection: View {
     @ObservedObject var controller: MouseController
     @ObservedObject var remapper: ButtonRemapper
     var onRecordShortcut: () -> Void
+    /// Opens the gesture editor on the DPI button.
+    var onGesture: () -> Void
+
+    /// The mouse's functions offered under Mouse besides Middle Click, which every menu has.
+    private static let firmwareMouseBindings = BLEProtocol.DPIButtonBinding.allCases.filter {
+        $0.buttonID != nil && $0 != .middleClick
+    }
+
+    private var menuLabel: String {
+        controller.dpiCycleButtonBinding.map { remapper.dpiCycleLabel(for: $0) }
+            ?? (controller.isUpdatingDpiCycleButton ? "Reading…" : "Read from mouse…")
+    }
 
     var body: some View {
         if controller.deviceIsBluetooth,
            controller.deviceID.map(RazerDevices.supportsDpiButtonBinding(pid:)) == true {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    Text("DPI Cycle").font(.system(size: 12, weight: .medium))
+                    Text(ButtonRemapper.label(for: ButtonRemapper.dpiButton)).font(.system(size: 12, weight: .medium))
                     Spacer(minLength: 6)
-                    Menu {
-                        Button("DPI Cycle (default)") {
-                            remapper.configureDpiCycle(.dpiCycle, controller: controller)
-                        }
-                        Menu("Shortcut") {
-                            ForEach(ButtonRemapper.presets) { preset in
-                                if let binding = dpiShortcutBinding(for: preset) {
-                                    Button(preset.name) { remapper.configureDpiCycle(binding, controller: controller) }
-                                }
-                            }
-                        }
-                        Menu("Mouse") {
-                            ForEach(BLEProtocol.DPIButtonBinding.allCases.filter { $0.buttonID != nil }) { binding in
-                                Button(binding.label) { remapper.configureDpiCycle(binding, controller: controller) }
-                            }
-                            Button("Double Click") {
-                                remapper.configureDpiCycle(.softwareBridge, softwareAction: .doubleClick, controller: controller)
-                            }
-                            .disabled(!remapper.remappingPermissionsGranted)
-                        }
-                        Menu("Media") {
-                            ForEach(ButtonRemapper.mediaOptions, id: \.code) { option in
-                                Button(option.name) {
-                                    remapper.configureDpiCycle(.softwareBridge,
-                                        softwareAction: .mediaKey(code: option.code, name: option.name), controller: controller)
-                                }
-                            }
-                        }
-                        .disabled(!remapper.remappingPermissionsGranted)
-                        Divider()
-                        Button("Record Custom Shortcut…", action: onRecordShortcut)
-                    } label: {
-                        Text(controller.dpiCycleButtonBinding.map { remapper.dpiCycleLabel(for: $0) }
-                             ?? (controller.isUpdatingDpiCycleButton ? "Reading…" : "Read from mouse…"))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 190)
+                    // None is DPI Cycle (default), which writes the button's factory function back.
+                    RemapActionMenu(label: menuLabel, noneTitle: BLEProtocol.DPIButtonBinding.dpiCycle.label,
+                                    onPick: { remapper.configureDpiButton($0, controller: controller) },
+                                    onRecord: onRecordShortcut,
+                                    onGesture: {
+                                        if remapper.makeDpiGesture(controller: controller) { onGesture() }
+                                    },
+                                    extraMouseChoices: Self.firmwareMouseBindings.map { binding in
+                                        RemapMenuChoice(title: binding.label) {
+                                            remapper.configureDpiCycle(binding, controller: controller)
+                                        }
+                                    },
+                                    softwareChoicesDisabled: !remapper.remappingPermissionsGranted,
+                                    width: 190)
                     .disabled(controller.isUpdatingDpiCycleButton || controller.dpiCycleButtonBinding == nil)
                 }
-                Text("Media and Double Click require MacRazer running with Accessibility and Input Monitoring enabled. They reserve F20 while active; select DPI Cycle (default) to restore the original button.")
+                Text("Media, Double Click, Gesture and keys the mouse can't type itself need MacRazer "
+                     + "running, with Accessibility and Input Monitoring on. While one is set, the button "
+                     + "types F20 and MacRazer turns it into the action. Choose DPI Cycle (default) to "
+                     + "put the button back.")
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -575,13 +594,9 @@ private struct DpiCycleBindingSection: View {
             }
             .padding(12)
             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+            // A read only: nothing is written until a choice is made in the menu.
             .onAppear { controller.refreshDpiCycleButtonBinding() }
         }
-    }
-
-    private func dpiShortcutBinding(for preset: RemapPreset) -> BLEProtocol.DPIButtonBinding? {
-        guard let usage = BLEProtocol.hidUsage(forMacKeyCode: preset.keyCode) else { return nil }
-        return .keyboardShortcut(hidUsage: usage, modifiers: DPIShortcutModifiers.hidValue(from: preset.flags))
     }
 }
 

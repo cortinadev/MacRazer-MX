@@ -127,8 +127,10 @@ final class MouseController: ObservableObject, @unchecked Sendable {
     @Published private(set) var deviceKey: String?
     /// The connected mouse is on Bluetooth. Read through the `supports…` properties below.
     @Published private(set) var deviceIsBluetooth = false
-    /// The Basilisk V3 X HyperSpeed's dedicated DPI Cycle assignment, available over Bluetooth.
+    /// The DPI button's assignment, as last read from the mouse over Bluetooth, on a model with
+    /// `RazerDevices.supportsDpiButtonBinding`. Nil until a read parses, and after a disconnect.
     @Published private(set) var dpiCycleButtonBinding: BLEProtocol.DPIButtonBinding?
+    /// Why the last read or write of it failed, in plain words (`dpiButtonErrorText`).
     @Published private(set) var dpiCycleButtonError: String?
     @Published private(set) var isUpdatingDpiCycleButton = false
     /// Side buttons the mouse's own table sends something else for (`SideButtonReset`), read
@@ -1420,14 +1422,18 @@ final class MouseController: ObservableObject, @unchecked Sendable {
                     self.isUpdatingDpiCycleButton = false
                 }
             } catch {
+                let text = Self.dpiButtonErrorText(error)
                 self.publish {
-                    self.dpiCycleButtonError = "Could not read this button over Bluetooth: \(error.localizedDescription)"
+                    self.dpiCycleButtonError = text
                     self.isUpdatingDpiCycleButton = false
                 }
             }
         }
     }
 
+    /// Writes the DPI button's assignment. `BluetoothDevice.setDpiCycleBinding` reads the
+    /// entry first and writes nothing unless it parses, then reads it back, so `completion`
+    /// gets true only once the mouse holds `binding`.
     func setDpiCycleButtonBinding(_ binding: BLEProtocol.DPIButtonBinding,
                                   completion: @escaping @Sendable (Bool) -> Void = { _ in }) {
         userCommand { [weak self] in
@@ -1450,13 +1456,35 @@ final class MouseController: ObservableObject, @unchecked Sendable {
                     completion(true)
                 }
             } catch {
+                let text = Self.dpiButtonErrorText(error)
                 self.publish {
-                    self.dpiCycleButtonError = "Button assignment failed or did not read back: \(error.localizedDescription)"
+                    self.dpiCycleButtonError = text
                     self.isUpdatingDpiCycleButton = false
                     self.lastWriteFailure = Date()
                     completion(false)
                 }
             }
+        }
+    }
+
+    /// The DPI button section's line for a failed read or write, in plain words. The write
+    /// reads first and throws that read's errors unchanged, so those all say nothing changed.
+    static func dpiButtonErrorText(_ error: Error) -> String {
+        switch error {
+        case BLEProtocol.DPIButtonWriteError.notTaken:
+            return "The mouse didn't confirm the change. Try again."
+        case BLEProtocol.DPIButtonWriteError.notReadBack:
+            return "The mouse didn't read the new setting back, so it may not have changed. Try again."
+        case BLEProtocol.DPIButtonEntryError.notTheDpiButton:
+            return "MacRazer couldn't confirm this is the mouse's DPI button, so it won't change it."
+        case BLEProtocol.DPIButtonEntryError.unrecognized:
+            return "MacRazer doesn't recognize what the mouse has saved for this button, so it won't change it."
+        case HIDDevice.HIDError.timeout, HIDDevice.HIDError.notFound:
+            return "The mouse stopped answering. Check that it's on and try again."
+        case HIDDevice.HIDError.notSupported, HIDDevice.HIDError.commandFailed:
+            return "The mouse didn't let MacRazer read this button, so MacRazer won't change it."
+        default:
+            return "MacRazer couldn't read this button from the mouse, so it won't change it. Try again."
         }
     }
 

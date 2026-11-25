@@ -44,9 +44,10 @@ enum BLEProtocol {
         static func brightnessGet(led: UInt8) -> Key { Key(0x10, 0x85, 0x01, led) }
         static func brightnessSet(led: UInt8) -> Key { Key(0x10, 0x05, 0x01, led) }
         static let staticColor = Key(0x10, 0x04, 0x00, 0x00)
-        // The Basilisk DPI Cycle assignment lives in the mouse's function table. Reads
-        // target the active bank; writes use the projection bank and are read back by the
-        // BluetoothDevice helper before the UI reports success.
+        // The DPI button's assignment lives in the mouse's function table, entry 0x60
+        // (`RazerDevices.supportsDpiButtonBinding`). Reads target the active bank; writes
+        // use the projection bank. BluetoothDevice reads the entry before every write and
+        // again after it, before the UI reports success.
         static let dpiButtonGet = Key(0x08, 0x84, 0x00, 0x60)
         static let dpiButtonSet = Key(0x08, 0x04, 0x01, 0x60)
         /// Any entry of that function table, by its id (the DPI Cycle entry is 0x60).
@@ -81,10 +82,11 @@ enum BLEProtocol {
         [slot, id, layer] + block
     }
 
-    /// Assignments supported by the Basilisk V3 X HyperSpeed's DPI Cycle control. Media
-    /// actions and custom shortcuts use `softwareBridge` (the mouse emits F20 and MacRazer
-    /// turns that signal into the saved macOS action); no undocumented consumer-control
-    /// payload is sent to the mouse.
+    /// What the DPI button's entry can hold, on every mouse with
+    /// `RazerDevices.supportsDpiButtonBinding`. Actions the mouse can't run itself (media
+    /// keys, Double Click, a gesture, a key it can't send) use `softwareBridge`: the mouse
+    /// types F20 and MacRazer turns that into the saved action. No undocumented
+    /// consumer-control payload is sent to the mouse.
     enum DPIButtonBinding: Equatable, Identifiable, Sendable {
         case dpiCycle
         case leftClick
@@ -184,7 +186,30 @@ enum BLEProtocol {
         if let buttonID = binding.buttonID {
             return Data([0x01, 0x60, 0x00, 0x01, 0x01, buttonID, 0, 0, 0, 0])
         }
-        return Data([0x01, 0x60, 0x00, 0x06, 0x01, 0x06, 0, 0, 0, 0])
+        return Data([0x01, 0x60, 0x00] + dpiCycleBlock)
+    }
+
+    /// The DPI button's factory function, DPI Cycle. What "DPI Cycle (default)" writes back,
+    /// and what a read of the entry must name as its factory block when it carries one.
+    static let dpiCycleBlock: [UInt8] = [0x06, 0x01, 0x06, 0, 0, 0, 0]
+
+    /// Why a read of the DPI button's entry can't be used. The write path reads the entry
+    /// first and stops on these, so they always mean nothing was written.
+    enum DPIButtonEntryError: Error, Equatable {
+        /// The reply isn't laid out as a read of entry 0x60, or what the button does now isn't
+        /// a `DPIButtonBinding` (a macro, a profile switch, nothing at all).
+        case unrecognized
+        /// The mouse names a factory function other than DPI Cycle for the entry, so on this
+        /// mouse it isn't the DPI button.
+        case notTheDpiButton
+    }
+
+    /// Why a write of the DPI button's entry failed after the read before it went through.
+    enum DPIButtonWriteError: Error, Equatable {
+        /// The mouse refused the write or didn't answer it, so it may or may not have taken it.
+        case notTaken
+        /// The read after the write failed, or showed something other than what was written.
+        case notReadBack
     }
 
     static let sleepTimeoutRange = 60...900
@@ -204,36 +229,45 @@ enum BLEProtocol {
         return value
     }
 
+    /// What the DPI button does now, from a read of entry 0x60. Fails closed, so that a write
+    /// only ever replaces something this app understands (`DPIButtonEntryError`).
+    ///
+    /// Two layouts answer. The short one (`01 60 00` and the current block) has no factory
+    /// block. The function-table one (`ButtonFunction`: `60, flag`, then the current and
+    /// factory blocks interleaved) is how the Cobra HyperSpeed answers entries 0x04 and 0x05;
+    /// with flag 0 its factory block must be DPI Cycle, the one sign a read gives that the
+    /// entry really is this mouse's DPI button. With flag 01 the second block is a HyperShift
+    /// layer instead, which says nothing about that, so only the current block is checked, as
+    /// in the short layout.
     static func parseDpiButtonBinding(_ payload: Data) throws -> DPIButtonBinding {
         let bytes = Array(payload)
         let functionBlock: [UInt8]
         if bytes.count >= 10, bytes[0] == 0x01, bytes[1] == 0x60 {
             functionBlock = Array(bytes[3..<10])
-        } else if bytes.count >= 16, bytes[0] == 0x60 {
-            let packed = Array(bytes.dropFirst(2))
-            functionBlock = Array(packed.enumerated().compactMap { index, byte in
-                index.isMultiple(of: 2) ? byte : nil
-            }.prefix(7))
+        } else if bytes.count >= 16, bytes[0] == 0x60,
+                  let entry = try? parseButtonFunction(id: 0x60, payload) {
+            if bytes[1] == 0x00, entry.factory != dpiCycleBlock { throw DPIButtonEntryError.notTheDpiButton }
+            functionBlock = entry.current
         } else {
-            throw HIDDevice.HIDError.badResponse
+            throw DPIButtonEntryError.unrecognized
         }
 
-        if functionBlock == [0x06, 0x01, 0x06, 0, 0, 0, 0] { return .dpiCycle }
-        if functionBlock.count == 7, functionBlock[0] == 0x02, functionBlock[1] == 0x02,
+        if functionBlock == dpiCycleBlock { return .dpiCycle }
+        if functionBlock[0] == 0x02, functionBlock[1] == 0x02,
            functionBlock[4...6].allSatisfy({ $0 == 0 }), functionBlock[3] != 0 {
             return .keyboardShortcut(hidUsage: functionBlock[3], modifiers: functionBlock[2])
         }
-        guard functionBlock.count == 7,
-              functionBlock[0] == 0x01,
-              functionBlock[1] == 0x01,
+        // A mouse button is `01 01 id` and nothing after it, as `dpiButtonPayload` writes it.
+        guard functionBlock[0] == 0x01, functionBlock[1] == 0x01,
+              functionBlock[3...6].allSatisfy({ $0 == 0 }),
               let binding = DPIButtonBinding.allCases.first(where: { $0.buttonID == functionBlock[2] }) else {
-            throw HIDDevice.HIDError.notSupported
+            throw DPIButtonEntryError.unrecognized
         }
         return binding
     }
 
-    /// Translate a macOS virtual key code into the USB HID usage used by the Basilisk
-    /// function table. Unknown keys fail closed instead of writing an ambiguous binding.
+    /// Translate a macOS virtual key code into the USB HID usage the mouse's function table
+    /// takes. Unknown keys fail closed instead of writing an ambiguous binding.
     static func hidUsage(forMacKeyCode keyCode: UInt16) -> UInt8? {
         let map: [UInt16: UInt8] = [
             0: 0x04, 1: 0x16, 2: 0x07, 3: 0x09, 4: 0x0B, 5: 0x0A,
