@@ -409,8 +409,10 @@ How driver mode is handled:
   at most three times per connection.
 - **It is given back.** Normal mode is written back and read back when the DPI button's action
   is cleared (DPI Cycle) and when MacRazer MX quits (waiting at most 3 seconds). If the app
-  crashes or is killed, nothing writes it back: the DPI button **does nothing** until the mouse
-  sleeps, reconnects or is switched off and on.
+  crashes or is killed, nothing writes it back at that moment: the DPI button **does nothing**
+  until the mouse sleeps, reconnects or is switched off and on, or until MacRazer MX runs again.
+  A run that does not need driver mode reads the mode once, about 10 seconds after the mouse
+  answers, and writes normal mode back if it finds driver mode left over.
 - **The old F20 binding.** If the mouse still holds F20 in entry `0x60`, left by an earlier
   version, the app writes the factory DPI-cycle block back once per connection. Under a Cobra
   action the entry holds DPI Cycle, so the button cycles DPI again with the app closed.

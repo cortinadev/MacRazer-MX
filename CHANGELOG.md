@@ -71,7 +71,8 @@ expect rough edges until 1.0.
   seconds to put it back if the mouse fell out of it, and tries a failed change again at most 3
   times per connection. Normal mode is written back when the DPI button's action is cleared
   and when MacRazer MX quits. If it crashes or is killed, the DPI button does nothing until
-  the mouse sleeps, reconnects or is switched off and on. If the mouse still holds the old F20
+  the mouse sleeps, reconnects or is switched off and on, or until the app runs again and
+  finds driver mode left over, which it then gives back. If the mouse still holds the old F20
   binding in entry 0x60, the factory DPI-cycle block is written back once. The Buttons page says
   where it stands. On hardware, a trace captured the mode write being accepted and read back,
   the link staying stable, the two keys behaving as described and normal mode restored on quit.

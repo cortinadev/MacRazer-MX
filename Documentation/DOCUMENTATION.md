@@ -742,8 +742,12 @@ a repeated frame changes nothing.
   finds it, cleared when normal mode reads back), and at quit
   (`MouseController.restoreDpiDriverModeForQuit`, from `applicationWillTerminate`, waiting at
   most `driverModeRestoreTimeout`, 3 s, for the device queue).
-- **Crash.** If MacRazer crashes or is killed, nothing writes normal mode back: the DPI button
-  does nothing until the mouse sleeps, reconnects or is power-cycled.
+- **Crash.** If MacRazer crashes or is killed, nothing writes normal mode back at that moment:
+  the DPI button does nothing until the mouse sleeps, reconnects or is power-cycled, or until
+  the next run. A run that does not want driver mode and never set it looks for a leftover once
+  (`DpiDriverModeBook`'s `.checkLeftover` step, from the poll, once the connection has answered
+  for `leftoverCheckDelay`, 10 s): one read of the mode, and normal mode written back only if it
+  reads 3.
 - **The old F20 binding.** If a read finds entry `0x60` holding F20 on a mouse with private keys
   (left by a build from before driver mode), `shouldClearDpiBridge` allows one write of the
   factory DPI-cycle block per connection (`dpiBridgeRestoreAttempted`), whatever action is saved.
