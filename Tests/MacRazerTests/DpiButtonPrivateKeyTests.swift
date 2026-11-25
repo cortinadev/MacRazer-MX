@@ -31,6 +31,13 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         holding.hold = mute
         return holding
     }
+    /// What a DPI gesture saved by an earlier build holds: Mission Control up, App Exposé down,
+    /// Space Left left and Space Right right. A saved gesture keeps its choices.
+    private func earlierLayout(click: RemapAction) -> GestureBindings {
+        func preset(_ id: String) -> RemapAction { ButtonRemapper.presets.first { $0.id == id }!.action }
+        return GestureBindings(click: click, up: preset("missionControl"), down: preset("appExpose"),
+                               left: preset("spaceLeft"), right: preset("spaceRight"))
+    }
 
     private final class Emitted {
         var actions: [RemapAction] = []
@@ -824,7 +831,7 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
             return (a.binding, a.softwareAction)
         }
         let f13 = RemapAction.keystroke(keyCode: 105, modifiers: 0, name: "F13")
-        for action in [f13, .doubleClick, .mediaKey(code: 16, name: "Play / Pause"), .gesture(bindings)] {
+        for action in [f13, .doubleClick, .mediaKey(code: 16, name: "Play / Pause"), .launchpad, .gesture(bindings)] {
             XCTAssertEqual(assignment(action).0, .dpiCycle, action.label)
             XCTAssertEqual(assignment(action).1, action, action.label)
         }
@@ -973,7 +980,7 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         }}}
         """#
         let decoded = try JSONDecoder().decode(RemapAction.self, from: Data(saved.utf8))
-        XCTAssertEqual(decoded, .gesture(.defaults(click: .dpiCycle)))
+        XCTAssertEqual(decoded, .gesture(earlierLayout(click: .dpiCycle)))
         guard case .gesture(let bindings) = decoded else { return XCTFail("not a gesture") }
         XCTAssertEqual(bindings.hold, .passthrough)
 
@@ -1026,7 +1033,7 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         }}}
         """#
         let decoded = try JSONDecoder().decode(RemapAction.self, from: Data(saved.utf8))
-        XCTAssertEqual(decoded, .gesture(.defaults(click: .passthrough)))
+        XCTAssertEqual(decoded, .gesture(earlierLayout(click: .passthrough)))
         XCTAssertEqual(try JSONDecoder().decode(RemapAction.self, from: Data(#"{"passthrough":{}}"#.utf8)), .passthrough)
 
         let store = defaults(#function)
@@ -1044,8 +1051,8 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         key(r, keys.long, down: true)
         move(r, dy: -80)
         key(r, keys.long, down: false)
-        XCTAssertEqual(emitted.actions, [GestureBindings.defaults(click: .passthrough).up],
-                       "the gesture itself works as before")
+        XCTAssertEqual(emitted.actions, [earlierLayout(click: .passthrough).up],
+                       "the gesture itself works as before, with what it was saved with")
 
         let encoded = try JSONEncoder().encode(RemapAction.dpiCycle)
         XCTAssertEqual(String(decoding: encoded, as: UTF8.self), #"{"dpiCycle":{}}"#)

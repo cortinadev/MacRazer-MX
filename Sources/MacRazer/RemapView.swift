@@ -132,7 +132,8 @@ struct RemapView: View {
     /// the pointer on this Mac (`DockSwipe.isSupported`), so the text says so.
     nonisolated static func gestureEditorExplanation(longPress: Bool,
                                                      followsPointer: Bool = DockSwipe.isSupported) -> String {
-        let swipes = "Mission Control, App Exposé, Space Left and Space Right follow the pointer while you hold it. "
+        let swipes = "Mission Control and the Spaces follow the pointer while you hold it, and so does App Exposé "
+            + "with its trackpad gesture on. "
         return longPress
             ? "Hold the DPI button until the gesture starts (about a second), then move the mouse up, "
                 + "down, left or right. " + (followsPointer ? swipes : "") + "A short press does Click. "
@@ -152,7 +153,7 @@ struct RemapView: View {
     /// The help under the DPI button's menu. On a mouse with private keys it says how MacRazer
     /// takes the button over while it runs, and gives it back, and how a gesture is made there.
     nonisolated static func dpiButtonHelpText(privateKeys: Bool) -> String {
-        let needs = "Media, Double Click, Gesture and keys the mouse can't type itself need MacRazer "
+        let needs = "Media, Double Click, Launchpad, Gesture and keys the mouse can't type itself need MacRazer "
             + "running, with Accessibility and Input Monitoring on. "
         guard privateKeys else {
             return needs + "While one is set, the button types F20 and MacRazer turns it into the action. "
@@ -438,7 +439,7 @@ private struct RemapActionMenu: View {
     /// More choices under Mouse, after the ones every button has: the DPI button's own
     /// functions (Left Click, Scroll Up, …), which no `RemapAction` names.
     var extraMouseChoices: [RemapMenuChoice] = []
-    /// Disables the choices only MacRazer can carry out (Double Click, Media, Gesture…). For
+    /// Disables the choices only MacRazer can carry out (Double Click, Media, Launchpad, Gesture…). For
     /// the DPI button while the event tap isn't available: the mouse runs its other choices.
     var softwareChoicesDisabled = false
     var width: CGFloat = 150
@@ -453,6 +454,12 @@ private struct RemapActionMenu: View {
             Menu("Shortcut") {
                 ForEach(ButtonRemapper.presets) { p in
                     Button(p.name) { onPick(p.action) }
+                    // Next to the other system presets, though it opens an app rather than
+                    // typing a shortcut: it has none by default.
+                    if p.id == ButtonRemapper.launchpadMenuAnchor {
+                        Button(RemapAction.launchpad.label) { onPick(.launchpad) }
+                            .disabled(softwareChoicesDisabled)
+                    }
                 }
             }
             Menu("Mouse") {

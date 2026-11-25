@@ -460,7 +460,8 @@ something inside the mouse still never reach macOS.
 
 - Actions (`RemapAction`): `.passthrough` (None), `.keystroke` (preset shortcuts or a **custom
  recorder** that captures any combo), `.mouseButton` (middle click and others), `.doubleClick`,
- `.mediaKey` (play/next/prev/volume/mute), `.dpiCycle` (DPI Cycle, offered only in a slot of
+ `.mediaKey` (play/next/prev/volume/mute), `.launchpad` (Launchpad, Apps on macOS 26, opened
+ by bundle id through `LaunchpadApp`, as it has no default shortcut), `.dpiCycle` (DPI Cycle, offered only in a slot of
  the DPI button's gesture on a mouse with private keys and inert anywhere else, §6.3.3) and
  `.gesture(GestureBindings)` (§6.3.2).
 - Mappings persist to UserDefaults per device (`buttonMappings-<device key>`). Needs
@@ -502,8 +503,9 @@ described here.
  missing `hold` key decodes as `.passthrough`, and it is encoded only when it isn't, so a
  gesture without it is saved exactly as before (mappings, the DPI button's action, profiles).
  A gesture inside a gesture is never offered, and `apply(_:)` ignores one that turns up in
- saved data. `GestureBindings.defaults(click:)` uses the presets `missionControl`,
- `appExpose`, `spaceLeft` and `spaceRight`, with Hold on None; `defaults(for: button)` takes
+ saved data. `GestureBindings.defaults(click:)` puts `missionControl` up, `.launchpad` down,
+ `spaceRight` left and `spaceLeft` right (a swipe drags the desktop, as on a trackpad), with
+ Hold on None; saved gestures keep their choices; `defaults(for: button)` takes
  `originalClick(for:)` as the click (Back re-posts Back, the wheel click re-posts a middle
  click, and `.passthrough` for the DPI button and the primary buttons, on every mouse).
  `makeGesture(_:)` applies the defaults to a button that isn't a gesture yet and keeps the
@@ -530,6 +532,12 @@ described here.
  device (`setActiveDevice`), and the tap being disabled by macOS
  (`tapDisabledByTimeout` / `tapDisabledByUserInput`). While paused a press passes through, so
  the mouse's own function remains.
+- **Launchpad** (`RemapAction.launchpad`, the default for a swipe down). `LaunchpadApp.open()`
+ opens `com.apple.apps.launcher` (Apps, which replaced Launchpad on macOS 26, where there is no
+ Launchpad.app) or else `com.apple.launchpad.launcher` (macOS 15 and earlier) through
+ `NSWorkspace`, and nothing on a Mac with neither. The menus call it "Apps" where Apps is the
+ one installed (`LaunchpadApp.label(installed:)`, pure). It is a discrete action, never a swipe,
+ and goes through `apply`, so a test's `actionEmitter` catches it.
 - **The system presets as keyboard shortcuts.** `appExpose` ("App Exposé  ⌃↓", key code 125) was
  added for the gesture. Where a system preset is posted as a keystroke (a slot outside a
  gesture, or a gesture where `DockSwipe.isSupported` is false, below), it goes out as the
@@ -598,10 +606,20 @@ described here.
    private SkyLight calls), so `DockSwipe.isSupported` is false there, `DockSwipeOutput.system`
    returns nil, no tracker is made, and the four presets are the keyboard shortcuts above,
    firing once at 50 points.
+  - **App Exposé needs the Dock's trackpad gesture.** The Dock ignores an App Exposé swipe while
+   System Settings › Trackpad › More Gestures › App Exposé is off, as it is out of the box
+   (`showAppExposeGestureEnabled` in `com.apple.dock`). So `dockSwipeTracker(for:)` asks
+   `DockSwipeOutput.appExposeEnabled` (`DockGestures.appExposeEnabled`, read fresh at every
+   hold) and, while it is off, takes App Exposé out of the slots (`SystemSwipeSlots.removing`):
+   it is then the ⌃↓ shortcut, fired once at 50 points.
+  - **The defaults.** Space Right left and Space Left right, so the desktop moves with the
+   pointer as on a trackpad, and Launchpad down, a discrete action: the vertical axis is mixed,
+   so moving down from the start fires Launchpad once at 50 points, while a swipe up taken back
+   down is clamped at the start and fires nothing.
   - **Hardware.** Confirmed on a real mouse on macOS 26.3: the Spaces animation follows the
-   pointer for horizontal swipes, and a vertical swipe was driven. The constants (the scale,
-   the dead zone) have not been tuned. **Not confirmed: App Exposé**; its trackpad gesture is
-   off by default (System Settings › Trackpad › More Gestures) and may need turning on.
+   pointer for horizontal swipes, and a vertical swipe was driven. App Exposé as a swipe did
+   nothing there with its trackpad gesture off, hence the fallback above. The constants (the
+   scale, the dead zone) have not been tuned.
 - **A gesture's click re-posts the button** (`postMouseClick`, tagged so it passes the tap), so
  it fires at release. A gesture button therefore can't be held to drag.
 - **UI.** `RemapView.gestureEditor` lists the slots (`ButtonRemapper.gestureSlots(of:)`: Click,

@@ -290,19 +290,43 @@ final class ButtonRemapperGestureTests: XCTestCase {
         XCTAssertEqual(r.gestureBindings(for: back)?.down, bindings.down, "and the editor can't nest one")
     }
 
-    /// The defaults follow the MX gesture button, and the click keeps the button's own click.
-    func testTheDefaultsAreMissionControlAppExposeAndSpaces() {
+    /// The defaults follow the MX gesture button: Mission Control up and Launchpad down, and
+    /// the Spaces the way a trackpad drags the desktop, so left brings the next Space (Space
+    /// Right) and right the previous one (Space Left). The click keeps the button's own click.
+    func testTheDefaultsAreMissionControlLaunchpadAndSpacesThatFollowTheHand() {
         func preset(_ id: String) -> RemapAction? { ButtonRemapper.presets.first { $0.id == id }?.action }
         let defaults = GestureBindings.defaults(for: back)
         XCTAssertEqual(defaults.up, preset("missionControl"))
-        XCTAssertEqual(defaults.down, preset("appExpose"))
-        XCTAssertEqual(defaults.left, preset("spaceLeft"))
-        XCTAssertEqual(defaults.right, preset("spaceRight"))
+        XCTAssertEqual(defaults.down, .launchpad)
+        XCTAssertEqual(defaults.left, preset("spaceRight"), "left brings the next Space")
+        XCTAssertEqual(defaults.right, preset("spaceLeft"), "right brings the previous Space")
         XCTAssertEqual(defaults.click, .mouseButton(button: back, name: "Back Button"))
         XCTAssertEqual(GestureBindings.defaults(for: 2).click, .mouseButton(button: 2, name: "Middle Click"),
                        "the same action as the menu's Middle Click")
         XCTAssertEqual(GestureBindings.defaults(for: -1).click, .passthrough,
                        "the DPI button has no click of its own to post")
+    }
+
+    /// With the defaults a swipe down opens Launchpad once, as soon as it reaches 50 points,
+    /// and a swipe left and right fire the next and the previous Space.
+    func testTheDefaultSwipesFireLaunchpadAndTheSpaces() {
+        let emitted = Emitted()
+        let r = ButtonRemapper(defaults: defaults(), actionEmitter: { emitted.actions.append($0) })
+        r.setMappings([back: .gesture(.defaults(for: back))])
+        func preset(_ id: String) -> RemapAction { ButtonRemapper.presets.first { $0.id == id }!.action }
+        send(r, .otherMouseDown)
+        send(r, .otherMouseDragged, dy: 30)
+        XCTAssertEqual(emitted.actions, [])
+        send(r, .otherMouseDragged, dy: 30)
+        send(r, .otherMouseDragged, dy: 300)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(emitted.actions, [.launchpad], "once, during the movement")
+        for dx: Int64 in [-60, 60] {
+            send(r, .otherMouseDown)
+            send(r, .otherMouseDragged, dx: dx)
+            send(r, .otherMouseUp)
+        }
+        XCTAssertEqual(emitted.actions, [.launchpad, preset("spaceRight"), preset("spaceLeft")])
     }
 
     /// Choosing Gesture… sets the defaults once; choosing it again only reopens the editor,

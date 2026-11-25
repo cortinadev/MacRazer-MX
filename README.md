@@ -8,10 +8,10 @@
 >
 > **What it adds**
 > - **Gesture mode** for the mouse's extra buttons: hold a button and move the mouse up, down,
->   left or right to run a different action for each direction (Mission Control, App Exposé,
->   a Space to the left or right by default). Those four follow the pointer like a trackpad
->   swipe: the Space slides and Mission Control opens as you move, and it finishes or snaps
->   back when you let go. See [Gesture mode](#gesture-mode).
+>   left or right to run a different action for each direction (Mission Control, Launchpad,
+>   and the next or previous Space by default). Mission Control and the Spaces follow the
+>   pointer like a trackpad swipe: the desktop slides with your hand and Mission Control opens
+>   as you move, and it finishes or snaps back when you let go. See [Gesture mode](#gesture-mode).
 > - **DPI button remap** on the Razer Cobra HyperSpeed over Bluetooth, as well as the Basilisk
 >   V3 X HyperSpeed, where upstream only has it. The button can take any action, a gesture
 >   included. On the Cobra a gesture is hold and swipe, done by switching the mouse to Razer's
@@ -296,15 +296,21 @@ In Configure Buttons, any extra button can be set to **Gesture…**. Hold the bu
 the mouse up, down, left or right, and that direction's action runs. Press and release without
 moving and the **Click** action runs.
 
-- **Defaults** when you choose Gesture…: up Mission Control, down App Exposé, left Space Left,
-  right Space Right. Click is what the button did before (Back still goes back, the wheel click
-  still middle-clicks).
-- **Each of the five slots** takes any ordinary action: a shortcut preset, a recorded shortcut,
-  a mouse click, a media key, or None. A gesture can't be nested inside a gesture. The Cobra's
+- **Defaults** when you choose Gesture…: up Mission Control, down Launchpad, left the next
+  Space, right the previous Space. Left and right move the Spaces the way a trackpad does, as
+  if you grabbed the desktop and moved it; swap the two Space slots if you prefer it the other
+  way. Down is Launchpad rather than App Exposé because App Exposé as a swipe needs its
+  trackpad gesture on (below). Click is what the button did before (Back still goes back, the
+  wheel click still middle-clicks). Gestures saved earlier keep what they have.
+- **Launchpad** has no keyboard shortcut, so MacRazer MX opens the app itself. On macOS 26 that
+  is **Apps**, which replaced Launchpad, and the menus call it that. It's in every button's
+  Shortcut menu, next to the system presets, and fires once at 50 points in a gesture.
+- **Each of the five slots** takes any ordinary action: a shortcut preset, Launchpad, a
+  recorded shortcut, a mouse click, a media key, or None. A gesture can't be nested inside a gesture. The Cobra's
   DPI button has a sixth, **Hold** (see below).
 - **Other actions fire once per hold**, as soon as the movement along the stronger axis reaches
-  50 points, not at release. This is what a custom shortcut, a media key or a mouse click in a
-  slot does. Going right and then back again counts as no movement, so it is still a click.
+  50 points, not at release. This is what Launchpad, a custom shortcut, a media key or a mouse
+  click in a slot does. Going right and then back again counts as no movement, so it is still a click.
 - **Mission Control, App Exposé, Space Left and Space Right follow the pointer.** In a gesture,
   these four presets don't type a shortcut. MacRazer MX sends the same kind of swipe events a
   trackpad does, so the Spaces transition, Mission Control or App Exposé moves with the pointer
@@ -316,7 +322,14 @@ moving and the **Click** action runs.
     to the Space on the left, whichever slot that is. You can move back past the start into the
     opposite slot's swipe only when that slot holds the same swipe the other way (Space Right
     opposite Space Left, App Exposé opposite Mission Control). Otherwise the swipe stops at its
-    start: you can take it back, but not turn it into something else.
+    start: you can take it back, but not turn it into something else. With the defaults, a
+    swipe up taken back down stops at the start rather than opening Launchpad, and with the
+    default Spaces the desktop moves with the pointer.
+  - **App Exposé** follows the pointer only while its trackpad gesture is on (System Settings ›
+    Trackpad › More Gestures › App Exposé, off out of the box): the Dock ignores the swipe
+    otherwise, which is what happened on a real Mac with it off. While it is off, App Exposé in
+    a slot is the ⌃↓ shortcut, fired once at 50 points. MacRazer MX reads that setting
+    (`showAppExposeGestureEnabled` in `com.apple.dock`) each time you press the button.
   - How far you have to move scales with the screen under the pointer: about one screen width
     for a Space, and the screen's height for Mission Control. These numbers are untuned
     starting points.
@@ -328,9 +341,8 @@ moving and the **Click** action runs.
     [Mac Mouse Fix](https://github.com/noah-nuebling/mac-mouse-fix) (see
     [NOTICE.md](NOTICE.md)) and written independently here; no code from it is used.
   - **Tested on real hardware**, on macOS 26.3: the Spaces animation follows the pointer for
-    horizontal swipes, and a vertical swipe was driven. **Not confirmed: App Exposé.** Its
-    trackpad gesture is off by default (System Settings › Trackpad › More Gestures) and may
-    need turning on.
+    horizontal swipes, and a vertical swipe was driven. App Exposé as a swipe did nothing there
+    with its trackpad gesture off, hence the fallback above.
 - **The pointer is not frozen** while you hold the button; it moves as usual. The button's own
   press, drag events and release are swallowed, so the app under the pointer doesn't see them.
 - **Only the extra buttons** (the ones macOS reports as "other" mouse buttons) can be gestures,
@@ -387,8 +399,9 @@ stops acting on the DPI button and reports it as "private keys" in HID input rep
 #### What you get on the Cobra over Bluetooth
 
 - **Gesture: hold the button until the gesture starts (about a second), then swipe.** It is a
-  true hold that lasts until you release. Mission Control, App Exposé and Spaces follow the
-  pointer as in [Gesture mode](#gesture-mode), and other actions fire once.
+  true hold that lasts until you release. Mission Control and the Spaces follow the pointer as
+  in [Gesture mode](#gesture-mode) (App Exposé too, with its trackpad gesture on), and other
+  actions, Launchpad among them, fire once. A new DPI gesture has the same swipes as any other.
 - **A short press** runs the gesture's **Click** slot, where **DPI Cycle** and **None** are
   separate choices. With DPI Cycle, MacRazer MX cycles the DPI stage itself, because in driver
   mode the firmware no longer does: it reads the stage table, moves to the next stage (the

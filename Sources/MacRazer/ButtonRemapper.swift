@@ -8,18 +8,20 @@ import CoreGraphics
 import IOKit.hid
 
 /// What a remapped button does. `.passthrough` lets the original event through; `.keystroke`
-/// suppresses the button and posts a key combo instead. `.gesture` makes it a gesture button:
-/// held and moved, it fires one action per direction; pressed in place, its click action.
-/// `.dpiCycle` steps the DPI stage in software. Only a slot of the DPI button's gesture on a
+/// suppresses the button and posts a key combo instead. `.launchpad` opens Launchpad, which is
+/// Apps on macOS 26 (`LaunchpadApp`). `.gesture` makes it a gesture button: held and moved, it
+/// fires one action per direction; pressed in place, its click action. `.dpiCycle` steps the
+/// DPI stage in software. Only a slot of the DPI button's gesture on a
 /// mouse with private keys offers it (`ButtonRemapper.gestureSlotLeadingChoices`), as there
 /// the firmware no longer cycles DPI in driver mode; anywhere else it does nothing
-/// (`ButtonRemapper.apply`). A new case: everything saved before it decodes as it did.
+/// (`ButtonRemapper.apply`). New cases: everything saved before them decodes as it did.
 enum RemapAction: Codable, Equatable, Sendable {
     case passthrough
     case keystroke(keyCode: UInt16, modifiers: UInt64, name: String)
     case mouseButton(button: Int, name: String)
     case doubleClick
     case mediaKey(code: Int, name: String)
+    case launchpad
     case dpiCycle
     indirect case gesture(GestureBindings)
 
@@ -28,6 +30,7 @@ enum RemapAction: Codable, Equatable, Sendable {
         case .passthrough: return "None"
         case .keystroke(_, _, let name), .mouseButton(_, let name), .mediaKey(_, let name): return name
         case .doubleClick: return "Double Click"
+        case .launchpad: return LaunchpadApp.label
         case .dpiCycle: return "DPI Cycle"
         case .gesture: return "Gesture"
         }
@@ -120,14 +123,20 @@ struct GestureBindings: Codable, Equatable, Sendable {
     func action(for direction: GestureDirection) -> RemapAction { self[GestureSlot(direction)] }
 
     /// What choosing Gesture sets, laid out like the gesture button on Logitech's MX mice:
-    /// up for Mission Control, down for App Exposé, left and right to change Space. `click`
-    /// is what a press without a swipe does. Hold starts as None.
+    /// up for Mission Control, down for Launchpad (Apps on macOS 26), and left and right to
+    /// change Space the way a trackpad does, as if the hand grabbed the desktop and moved it:
+    /// a swipe left brings the next Space (Space Right), a swipe right the previous one (Space
+    /// Left). With the swipes that follow the pointer, the desktop then moves with the hand.
+    /// App Exposé, the other natural choice for down, does nothing as a trackpad swipe while
+    /// its trackpad gesture is off, which it is out of the box. `click` is what a press without
+    /// a swipe does. Hold starts as None. Only new gestures get these: a saved one keeps its
+    /// choices, and the two Space slots can be swapped back in the editor.
     static func defaults(click: RemapAction) -> GestureBindings {
         func preset(_ id: String) -> RemapAction {
             ButtonRemapper.presets.first { $0.id == id }?.action ?? .passthrough
         }
-        return GestureBindings(click: click, up: preset("missionControl"), down: preset("appExpose"),
-                               left: preset("spaceLeft"), right: preset("spaceRight"))
+        return GestureBindings(click: click, up: preset("missionControl"), down: .launchpad,
+                               left: preset("spaceRight"), right: preset("spaceLeft"))
     }
 
     /// The defaults for a mouse button, whose click keeps doing what the button did before
@@ -162,6 +171,44 @@ enum GestureSlot: CaseIterable, Sendable {
         case .left: "Swipe Left"
         case .right: "Swipe Right"
         }
+    }
+}
+
+/// The system app that `RemapAction.launchpad` opens: Launchpad on macOS 15 and earlier, and
+/// Apps, which replaced it, on macOS 26 (there is no Launchpad.app there). It has no keyboard
+/// shortcut by default, so it is opened by bundle id rather than typed.
+enum LaunchpadApp {
+    /// Apps, macOS 26 and later (`/System/Applications/Apps.app`).
+    static let appsBundleID = "com.apple.apps.launcher"
+    /// Launchpad, macOS 15 and earlier.
+    static let launchpadBundleID = "com.apple.launchpad.launcher"
+    /// Tried in this order: a Mac with Apps has no Launchpad to open.
+    static let bundleIDs = [appsBundleID, launchpadBundleID]
+
+    /// The first of `bundleIDs` that `exists` says is installed, or nil for neither.
+    static func installedBundleID(exists: (String) -> Bool) -> String? {
+        bundleIDs.first(where: exists)
+    }
+
+    /// What the menus call it, from the bundle that is installed: "Apps" where Apps is the one
+    /// there, the name macOS 26 gives it, and "Launchpad" otherwise.
+    static func label(installed bundleID: String?) -> String {
+        bundleID == appsBundleID ? "Apps" : "Launchpad"
+    }
+
+    /// This Mac's app, looked up once: it can't change while the app runs.
+    static let installed: String? = installedBundleID { url(of: $0) != nil }
+
+    static let label = label(installed: installed)
+
+    private static func url(of bundleID: String) -> URL? {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+    }
+
+    /// Opens it, or does nothing on a Mac with neither.
+    static func open() {
+        guard let installed, let url = url(of: installed) else { return }
+        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
     }
 }
 
@@ -413,6 +460,10 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         .init(id: "screenshot", name: "Screenshot  ⇧⌘4", keyCode: 21, flags: [.maskCommand, .maskShift]),
         .init(id: "switchApp", name: "Switch App  ⌘Tab", keyCode: 48, flags: .maskCommand),
     ]
+
+    /// The preset the menus list Launchpad (`RemapAction.launchpad`) after: the last of the
+    /// system ones, Mission Control, App Exposé and the Spaces.
+    static let launchpadMenuAnchor = "spaceRight"
 
     // MARK: - Lifecycle
 
@@ -924,9 +975,16 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
 
     /// The tracker for a hold of `bindings`: nil when no direction holds a system swipe, or
     /// they don't follow the pointer here. The scale is the screen's as the hold starts.
+    ///
+    /// App Exposé is a swipe only while the Dock's trackpad gesture for it is on: off, which it
+    /// is out of the box, the Dock ignores the swipe and nothing at all would happen. So then it
+    /// stays out of the tracker and is the ⌃↓ shortcut its slot holds, fired once at 50 points
+    /// like any other action. Asked at every hold, so a change in System Settings counts from
+    /// the next press.
     private func dockSwipeTracker(for bindings: GestureBindings) -> DockSwipeTracker? {
         guard let dockSwipes else { return nil }
-        let slots = SystemSwipeSlots(bindings)
+        var slots = SystemSwipeSlots(bindings)
+        if slots.contains(.appExpose), !dockSwipes.appExposeEnabled() { slots = slots.removing(.appExpose) }
         guard !slots.isEmpty else { return nil }
         return DockSwipeTracker(slots: slots, scale: dockSwipes.scale(), at: clock())
     }
@@ -1040,6 +1098,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         case .mouseButton(let b, _): postMouseClick(b)
         case .doubleClick: postDoubleClick()
         case .mediaKey(let code, _): postMediaKey(code)
+        case .launchpad: LaunchpadApp.open()
         }
     }
 
@@ -1291,7 +1350,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
                let binding = BLEProtocol.DPIButtonBinding.allCases.first(where: { $0.buttonID == UInt8(button + 1) }) {
                 return (binding, nil)
             }
-        case .doubleClick, .mediaKey, .gesture:
+        case .doubleClick, .mediaKey, .launchpad, .gesture:
             break
         }
         return (privateKeys ? .dpiCycle : .softwareBridge, action)

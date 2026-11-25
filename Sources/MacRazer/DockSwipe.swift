@@ -270,6 +270,15 @@ struct SystemSwipeSlots: Equatable, Sendable {
 
     var isEmpty: Bool { up == nil && down == nil && left == nil && right == nil }
 
+    func contains(_ swipe: SystemSwipe) -> Bool { [up, down, left, right].contains(swipe) }
+
+    /// The same slots with `swipe` taken out wherever it is: those directions become ordinary
+    /// actions again, fired once by the discrete swipe.
+    func removing(_ swipe: SystemSwipe) -> SystemSwipeSlots {
+        SystemSwipeSlots(up: up == swipe ? nil : up, down: down == swipe ? nil : down,
+                         left: left == swipe ? nil : left, right: right == swipe ? nil : right)
+    }
+
     subscript(direction: GestureDirection) -> SystemSwipe? {
         switch direction {
         case .up: up
@@ -461,13 +470,48 @@ struct DockSwipeOutput {
     let send: (DockSwipe.Frame) -> Void
     /// The scale for a hold starting now (`DockSwipe.Scale.current`).
     let scale: () -> DockSwipe.Scale
+    /// Whether the Dock acts on an App Exposé swipe now (`DockGestures.appExposeEnabled`),
+    /// asked as each hold starts. Tests say yes unless they test the other way.
+    let appExposeEnabled: () -> Bool
+
+    init(send: @escaping (DockSwipe.Frame) -> Void, scale: @escaping () -> DockSwipe.Scale,
+         appExposeEnabled: @escaping () -> Bool = { true }) {
+        self.send = send
+        self.scale = scale
+        self.appExposeEnabled = appExposeEnabled
+    }
 
     /// Posts to the session, or nil on a macOS that ignores these events
     /// (`DockSwipe.isSupported`), whose system swipes stay keyboard shortcuts.
     static func system(userData: Int64) -> DockSwipeOutput? {
         guard DockSwipe.isSupported else { return nil }
         let poster = DockSwipePoster(userData: userData)
-        return DockSwipeOutput(send: poster.post, scale: DockSwipe.Scale.current)
+        return DockSwipeOutput(send: poster.post, scale: DockSwipe.Scale.current,
+                               appExposeEnabled: DockGestures.appExposeEnabled)
+    }
+}
+
+/// The Dock's own trackpad gesture settings, as far as the dock swipes need them. App
+/// Exposé's is off out of the box, and while it is off the Dock ignores an App Exposé swipe
+/// entirely (seen on macOS 26.3, where it did nothing), so the preset falls back to its ⌃↓
+/// shortcut there (`ButtonRemapper.dockSwipeTracker(for:)`). Mission Control's and the
+/// Spaces' swipes are on out of the box and are always sent.
+enum DockGestures {
+    static let dockDomain = "com.apple.dock"
+    /// System Settings › Trackpad › More Gestures › App Exposé.
+    static let appExposeKey = "showAppExposeGestureEnabled"
+
+    /// Read fresh each time: the setting can change in System Settings while MacRazer runs.
+    static func appExposeEnabled() -> Bool {
+        let domain = dockDomain as CFString
+        CFPreferencesAppSynchronize(domain)
+        return isOn(CFPreferencesCopyAppValue(appExposeKey as CFString, domain))
+    }
+
+    /// A stored value as a switch: on only for a number or boolean that says so, so a setting
+    /// never written reads as off, the macOS default.
+    static func isOn(_ value: Any?) -> Bool {
+        (value as? NSNumber)?.boolValue ?? false
     }
 }
 

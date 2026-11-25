@@ -19,9 +19,14 @@ final class InteractiveSwipeTests: XCTestCase {
     private let playPause = RemapAction.mediaKey(code: 16, name: "Play / Pause")
     private let copy = RemapAction.keystroke(keyCode: 8, modifiers: CGEventFlags.maskCommand.rawValue, name: "Copy  ⌘C")
 
-    /// The defaults (Mission Control, App Exposé, Space Left, Space Right) with Play / Pause
-    /// as the click, so a click shows up.
-    private var bindings: GestureBindings { .defaults(click: playPause) }
+    private func preset(_ id: String) -> RemapAction { ButtonRemapper.presets.first { $0.id == id }!.action }
+
+    /// All four system swipes, each on its own side (Mission Control up, App Exposé down, Space
+    /// Left left, Space Right right), with Play / Pause as the click, so a click shows up.
+    private var bindings: GestureBindings {
+        GestureBindings(click: playPause, up: preset("missionControl"), down: preset("appExpose"),
+                        left: preset("spaceLeft"), right: preset("spaceRight"))
+    }
 
     private final class Recorded {
         var actions: [RemapAction] = []
@@ -49,16 +54,23 @@ final class InteractiveSwipeTests: XCTestCase {
         return defaults
     }
 
-    private func output(_ recorded: Recorded) -> DockSwipeOutput {
-        let scale = scale
-        return DockSwipeOutput(send: { recorded.frames.append($0) }, scale: { scale })
+    /// The Dock's App Exposé trackpad gesture, as the remapper reads it at each hold.
+    private final class DockSetting {
+        var appExpose = true
+        var reads = 0
     }
 
-    /// A remapper with Back as a gesture of `bindings` (the defaults unless given).
+    private func output(_ recorded: Recorded, dock: DockSetting = DockSetting()) -> DockSwipeOutput {
+        let scale = scale
+        return DockSwipeOutput(send: { recorded.frames.append($0) }, scale: { scale },
+                               appExposeEnabled: { dock.reads += 1; return dock.appExpose })
+    }
+
+    /// A remapper with Back as a gesture of `bindings` (all four swipes unless given).
     private func remapper(_ recorded: Recorded, bindings: GestureBindings? = nil, clock: Clock = Clock(),
-                          name: String = #function) -> ButtonRemapper {
+                          dock: DockSetting = DockSetting(), name: String = #function) -> ButtonRemapper {
         let r = ButtonRemapper(defaults: defaults(name), actionEmitter: { recorded.actions.append($0) },
-                               dockSwipes: output(recorded), clock: { clock.now })
+                               dockSwipes: output(recorded, dock: dock), clock: { clock.now })
         r.setMappings([back: .gesture(bindings ?? self.bindings)])
         return r
     }
@@ -144,9 +156,9 @@ final class InteractiveSwipeTests: XCTestCase {
         XCTAssertEqual(recorded.frames.count, 5)
     }
 
-    /// Each default direction heads for its slot: up opens Mission Control (negative), down
-    /// App Exposé, right the next Space.
-    func testEachDefaultDirectionHeadsForItsSlot() {
+    /// Each direction heads for its slot: up opens Mission Control (negative), down App
+    /// Exposé, right the next Space.
+    func testEachDirectionHeadsForItsSlot() {
         let recorded = Recorded()
         let clock = Clock()
         let r = remapper(recorded, clock: clock)
@@ -280,11 +292,124 @@ final class InteractiveSwipeTests: XCTestCase {
         XCTAssertEqual(recorded.frames, [])
     }
 
+    // MARK: App Exposé, and the default gesture
+
+    /// App Exposé follows the pointer only while the Dock's trackpad gesture for it is on. Off,
+    /// as it is out of the box, the Dock would ignore the swipe, so the slot is its ⌃↓ shortcut,
+    /// fired once at 50 points, and nothing goes to the Dock. The setting is read at each hold,
+    /// so turning it on counts from the next press.
+    func testAppExposeIsASwipeOnlyWhileItsTrackpadGestureIsOn() {
+        let recorded = Recorded()
+        let clock = Clock()
+        let dock = DockSetting()
+        dock.appExpose = false
+        let r = remapper(recorded, clock: clock, dock: dock)
+        send(r, .otherMouseDown)
+        drag(r, clock, dy: 30)
+        XCTAssertEqual(recorded.actions, [], "not yet 50 points")
+        drag(r, clock, dy: 30)
+        drag(r, clock, dy: 200)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.actions, [preset("appExpose")], "the shortcut, once")
+        XCTAssertEqual(recorded.frames, [], "nothing for the Dock")
+        XCTAssertEqual(dock.reads, 1, "read as the hold began")
+
+        // The other swipes still follow the pointer with it off.
+        send(r, .otherMouseDown)
+        drag(r, clock, dy: -30)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.phases.first, .began)
+        XCTAssertEqual(recorded.frames.first?.kind, .vertical)
+        XCTAssertLessThan(recorded.frames.first?.progress ?? 0, 0, "Mission Control")
+
+        dock.appExpose = true
+        recorded.frames = []
+        send(r, .otherMouseDown)
+        drag(r, clock, dy: 30)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.phases.first, .began, "on now: App Exposé follows the pointer")
+        XCTAssertGreaterThan(recorded.frames.first?.progress ?? 0, 0)
+        XCTAssertEqual(recorded.actions, [preset("appExpose")], "and no shortcut this time")
+        XCTAssertEqual(dock.reads, 3)
+    }
+
+    /// With App Exposé off and Mission Control up, a swipe up taken back down stops at the start:
+    /// the shortcut below it never takes over a swipe under way.
+    func testAppExposeOffNeverTakesOverMissionControl() {
+        let recorded = Recorded()
+        let clock = Clock()
+        let dock = DockSetting()
+        dock.appExpose = false
+        let r = remapper(recorded, clock: clock, dock: dock)
+        send(r, .otherMouseDown)
+        drag(r, clock, dy: -30)
+        drag(r, clock, dy: 200)
+        XCTAssertEqual(recorded.frames.last?.progress, 0, "clamped at the start")
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.phases.last, .cancelled)
+        XCTAssertEqual(recorded.actions, [])
+    }
+
+    /// The default gesture mixes the axis: Mission Control up follows the pointer, Launchpad
+    /// down is an ordinary action. Moving down fires Launchpad once at 50 points and sends the
+    /// Dock nothing; moving up drives Mission Control, and taking it back down past the start
+    /// stops there, as Launchpad isn't the same swipe the other way: it never fires then, and
+    /// Mission Control is never driven backwards.
+    func testTheDefaultsMixASwipeUpAndLaunchpadDown() {
+        let recorded = Recorded()
+        let clock = Clock()
+        let r = remapper(recorded, bindings: .defaults(click: playPause), clock: clock)
+        send(r, .otherMouseDown)
+        drag(r, clock, dy: 30)
+        XCTAssertEqual(recorded.actions, [])
+        drag(r, clock, dy: 30)
+        XCTAssertEqual(recorded.actions, [.launchpad], "at 50 points")
+        drag(r, clock, dy: 300)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.actions, [.launchpad], "once")
+        XCTAssertEqual(recorded.frames, [], "no swipe for the Dock")
+
+        send(r, .otherMouseDown)
+        drag(r, clock, dy: -30)
+        XCTAssertEqual(recorded.phases, [.began])
+        XCTAssertLessThan(recorded.frames[0].progress, 0, "towards Mission Control")
+        drag(r, clock, dy: 300)
+        XCTAssertTrue(recorded.frames.allSatisfy { $0.progress <= 0 }, "never past the start")
+        XCTAssertEqual(recorded.frames.last?.progress, 0)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.phases.last, .cancelled)
+        XCTAssertEqual(recorded.actions, [.launchpad], "no Launchpad from a swipe taken back")
+    }
+
+    /// The default Spaces move the way a trackpad drags the desktop: the pointer moving right
+    /// drives the swipe towards the previous Space (Space Left, negative progress), so the
+    /// desktop follows the hand, and moving left brings the next Space.
+    func testTheDefaultSpacesFollowTheHand() {
+        let recorded = Recorded()
+        let clock = Clock()
+        let r = remapper(recorded, bindings: .defaults(click: playPause), clock: clock)
+        send(r, .otherMouseDown)
+        drag(r, clock, dx: 30)
+        drag(r, clock, dx: 20)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.frames.first?.kind, .horizontal)
+        XCTAssertEqual(recorded.frames.first?.progress ?? 0, -0.03, accuracy: 1e-9, "towards the previous Space")
+        XCTAssertEqual(recorded.phases.last, .ended)
+        XCTAssertLessThan(recorded.frames.last?.velocity ?? 0, 0)
+
+        recorded.frames = []
+        send(r, .otherMouseDown)
+        drag(r, clock, dx: -30)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(recorded.frames.first?.progress ?? 0, 0.03, accuracy: 1e-9, "towards the next Space")
+        XCTAssertEqual(recorded.actions, [])
+    }
+
     /// The editor says the four follow the pointer, where they do.
     func testTheEditorSaysTheSystemSwipesFollowThePointer() {
         for longPress in [false, true] {
             let text = RemapView.gestureEditorExplanation(longPress: longPress, followsPointer: true)
-            XCTAssertTrue(text.contains("Mission Control, App Exposé, Space Left and Space Right follow the pointer while you hold it."))
+            XCTAssertTrue(text.contains("Mission Control and the Spaces follow the pointer while you hold it, and so does App Exposé with its trackpad gesture on."))
             XCTAssertFalse(text.contains("\u{2014}"), "no em dash")
             XCTAssertFalse(RemapView.gestureEditorExplanation(longPress: longPress, followsPointer: false)
                 .contains("follow the pointer"), "not where they stay shortcuts")

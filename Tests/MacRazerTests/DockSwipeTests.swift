@@ -18,11 +18,12 @@ final class DockSwipeTests: XCTestCase {
 
     private let copy = RemapAction.keystroke(keyCode: 8, modifiers: CGEventFlags.maskCommand.rawValue, name: "Copy  ⌘C")
 
-    /// Up Mission Control, down App Exposé, left and right the Spaces.
-    private var defaultSlots: SystemSwipeSlots { SystemSwipeSlots(.defaults(click: .passthrough)) }
+    /// All four system swipes, each on its own side: up Mission Control, down App Exposé, left
+    /// Space Left, right Space Right.
+    private let allFour = SystemSwipeSlots(up: .missionControl, down: .appExpose, left: .spaceLeft, right: .spaceRight)
 
     private func tracker(_ slots: SystemSwipeSlots? = nil) -> DockSwipeTracker {
-        DockSwipeTracker(slots: slots ?? defaultSlots, scale: scale, at: 0)
+        DockSwipeTracker(slots: slots ?? allFour, scale: scale, at: 0)
     }
 
     // MARK: Which slots
@@ -35,18 +36,37 @@ final class DockSwipeTests: XCTestCase {
         XCTAssertEqual(SystemSwipe(preset("appExpose")), .appExpose)
         XCTAssertEqual(SystemSwipe(preset("spaceLeft")), .spaceLeft)
         XCTAssertEqual(SystemSwipe(preset("spaceRight")), .spaceRight)
-        XCTAssertEqual(defaultSlots, SystemSwipeSlots(up: .missionControl, down: .appExpose,
-                                                      left: .spaceLeft, right: .spaceRight))
+        XCTAssertEqual(SystemSwipeSlots(.defaults(click: .passthrough)),
+                       SystemSwipeSlots(up: .missionControl, down: nil, left: .spaceRight, right: .spaceLeft),
+                       "the defaults: Launchpad down isn't a swipe, and the Spaces are swapped")
 
         let recorded = RemapAction.keystroke(keyCode: 126, modifiers: CGEventFlags.maskControl.rawValue, name: "⌃↑")
         for action in [recorded, copy, preset("screenshot"), .passthrough, .doubleClick,
                        .mediaKey(code: 16, name: "Play / Pause"), .mouseButton(button: 3, name: "Back Button"),
-                       .gesture(.defaults(click: .passthrough))] {
+                       .launchpad, .gesture(.defaults(click: .passthrough))] {
             XCTAssertNil(SystemSwipe(action), action.label)
         }
         XCTAssertTrue(SystemSwipeSlots(GestureBindings(click: preset("missionControl"), up: copy, down: .passthrough,
                                                        left: .doubleClick, right: recorded)).isEmpty,
                       "the click is never a swipe")
+    }
+
+    /// App Exposé is a dock swipe only while the Dock's trackpad gesture for it is on; the
+    /// setting reads as off unless it says yes, as macOS has it out of the box.
+    func testAppExposeIsASwipeOnlyWhileItsTrackpadGestureIsOn() {
+        XCTAssertEqual(DockGestures.appExposeKey, "showAppExposeGestureEnabled")
+        XCTAssertEqual(DockGestures.dockDomain, "com.apple.dock")
+        XCTAssertTrue(DockGestures.isOn(true as NSNumber))
+        XCTAssertTrue(DockGestures.isOn(1 as NSNumber))
+        XCTAssertFalse(DockGestures.isOn(false as NSNumber))
+        XCTAssertFalse(DockGestures.isOn(0 as NSNumber))
+        XCTAssertFalse(DockGestures.isOn(nil), "never set: off, the default")
+        XCTAssertFalse(DockGestures.isOn("1" as NSString), "not a number")
+
+        XCTAssertEqual(allFour.removing(.appExpose),
+                       SystemSwipeSlots(up: .missionControl, down: nil, left: .spaceLeft, right: .spaceRight))
+        XCTAssertEqual(SystemSwipeSlots(up: .appExpose, down: .appExpose).removing(.appExpose), SystemSwipeSlots())
+        XCTAssertEqual(allFour.removing(.missionControl).up, nil)
     }
 
     /// A preset saved without the Fn and numeric pad flags (as before #143) is still the
@@ -89,9 +109,9 @@ final class DockSwipeTests: XCTestCase {
         XCTAssertEqual(t.swipe, .spaceLeft)
     }
 
-    /// The defaults: left heads for the previous Space and up opens Mission Control, as the
-    /// slots say, and the other two the other way. Getting a sign wrong would swap them.
-    func testEachDefaultDirectionHeadsForItsSlot() {
+    /// Left heads for the previous Space and up opens Mission Control, as the slots say, and
+    /// the other two the other way. Getting a sign wrong would swap them.
+    func testEachDirectionHeadsForItsSlot() {
         let moves: [(dx: Double, dy: Double, kind: DockSwipe.Kind, sign: Double)] = [
             (-20, 0, .horizontal, -1), (20, 0, .horizontal, 1), (0, -20, .vertical, -1), (0, 20, .vertical, 1),
         ]
@@ -107,9 +127,9 @@ final class DockSwipeTests: XCTestCase {
                        "vertical progress has its own scale")
     }
 
-    /// The sign comes from the slots, not the screen: with left and right swapped, moving
-    /// left heads for the Space on the right, and with up and down swapped, moving up opens
-    /// App Exposé.
+    /// The sign comes from the slots, not the screen: with left and right swapped, as the
+    /// defaults have them, moving left heads for the Space on the right, and with up and down
+    /// swapped, moving up opens App Exposé.
     func testSwappedSlotsFlipTheSign() {
         let swapped = SystemSwipeSlots(up: .appExpose, down: .missionControl, left: .spaceRight, right: .spaceLeft)
         var left = tracker(swapped)

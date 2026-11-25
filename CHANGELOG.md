@@ -10,12 +10,18 @@ expect rough edges until 1.0.
 - **Gesture mode for the extra buttons.** In Configure Buttons, choose Gesture… for a button,
   then hold it and move the mouse up, down, left or right to run a different action for each
   direction. Press and release without moving and its Click action runs. The defaults are
-  Mission Control up, App Exposé down, Space Left and Space Right, and Click is what the button
-  did before. Each of the five slots takes any normal action: a shortcut preset, a recorded
-  shortcut, a mouse click, a media key or none (the Cobra's DPI button adds a sixth, Hold,
-  below). Those other actions fire once per hold, when the movement along the stronger axis
-  reaches 50 points. Mission Control, App Exposé and the two Space presets follow the pointer
-  instead (see the entry below). The pointer isn't frozen while you hold the button.
+  Mission Control up, Launchpad down, the next Space left and the previous Space right, so the
+  Spaces move the way a trackpad drags the desktop, and Click is what the button did before.
+  Gestures saved earlier keep what they have. Each of the five slots takes any normal action:
+  a shortcut preset, Launchpad, a recorded shortcut, a mouse click, a media key or none (the
+  Cobra's DPI button adds a sixth, Hold, below). Those other actions fire once per hold, when
+  the movement along the stronger axis reaches 50 points. Mission Control, the Spaces and,
+  with its trackpad gesture on, App Exposé follow the pointer instead (see the entry below).
+  The pointer isn't frozen while you hold the button.
+- **Launchpad for any button.** It has no keyboard shortcut, so MacRazer MX opens the app
+  itself. On macOS 26 that's Apps, which replaced Launchpad, and the menus call it Apps there.
+  It's in every button's shortcut list, next to Mission Control and the Spaces, it's the
+  gesture's default for a swipe down, and the Cobra's DPI button can take it too.
 - **Gestures that follow the pointer.** In a gesture, Mission Control, App Exposé, Space Left
   and Space Right no longer type a keyboard shortcut. They are driven as the trackpad's own
   dock swipe events, so the Spaces transition, Mission Control or App Exposé follows the
@@ -27,16 +33,18 @@ expect rough edges until 1.0.
   velocity, so a flick finishes a short swipe, and cancels when the pointer was coming back.
   The end is sent again after 0.2 s and 0.5 s in case the Dock misses it, and a hold that
   ends early cancels an open swipe. A custom shortcut, a media key or a mouse click in a slot
-  still fires once at 50 points. On macOS 27, which ignores these event fields, the four
+  still fires once at 50 points. App Exposé follows the pointer only while its trackpad gesture
+  is on (System Settings › Trackpad › More Gestures, off out of the box), as the Dock ignores
+  the swipe otherwise; then it is the ⌃↓ shortcut, fired once at 50 points. With the default
+  slots the desktop moves with the hand, and a swipe up taken back down stops at the start
+  rather than opening Launchpad. On macOS 27, which ignores these event fields, the four
   presets stay keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), which have to be on in System Settings ›
   Keyboard › Keyboard Shortcuts › Mission Control. The event format is undocumented macOS
   behaviour, learned from Mac Mouse Fix (credited in NOTICE.md) and written independently.
   Confirmed on a real mouse on macOS 26.3: the Spaces animation follows the pointer for
-  horizontal swipes and a vertical swipe was driven. The constants have not been tuned, and
-  App Exposé is not confirmed (its trackpad gesture is off by default in System Settings ›
-  Trackpad › More Gestures and may need turning on).
-- **An App Exposé ⌃↓ shortcut preset.** It's in the shortcut list of every button, and it's the
-  gesture's default for a swipe down.
+  horizontal swipes and a vertical swipe was driven; App Exposé as a swipe did nothing there
+  with its trackpad gesture off. The constants have not been tuned.
+- **An App Exposé ⌃↓ shortcut preset.** It's in the shortcut list of every button.
 - **The DPI button can be remapped on the Cobra HyperSpeed over Bluetooth.** Until now only the
   Basilisk V3 X HyperSpeed had it. The DPI button can take any action, a gesture included, or
   go back to DPI Cycle (default). A function the mouse can do itself (a mouse button, a
