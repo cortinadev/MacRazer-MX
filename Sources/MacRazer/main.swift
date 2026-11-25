@@ -565,7 +565,11 @@ case "render-remap":
     r.loadPreviewState()
     // `wide`: the popover's two-column Buttons page, with the DPI button section.
     // `side-buttons`: the window with the notice for side buttons saved to other functions.
-    if args.contains("side-buttons") {
+    // `gesture`: the window with the gesture editor open on the preview's gesture button.
+    if args.contains("gesture") {
+        let gestureButton = r.mappings.first { $0.value.isGesture }?.key
+        writeHostedPNG(RemapView(remapper: r, previewGestureEditor: gestureButton), look: renderLook(args), to: path)
+    } else if args.contains("side-buttons") {
         let mouse = MouseController()
         mouse.loadPreviewState()
         mouse.setPreviewSideButtonsRemapped()
