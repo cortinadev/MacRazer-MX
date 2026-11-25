@@ -89,9 +89,14 @@ protocol PrivateKeySource: AnyObject {
     var isRunning: Bool { get }
     /// Starts delivering the private keys of the Bluetooth mouse `productID`, on the main
     /// thread. False when it can't: Input Monitoring isn't granted, or the mouse's HID device
-    /// wouldn't open. Starting again for the same mouse keeps what is running.
+    /// wouldn't open. Starting again for the same mouse keeps what is running. A failure isn't
+    /// kept: the next start tries again from scratch.
     func start(productID: Int, onEvent: @escaping (PrivateKeyEvent) -> Void) -> Bool
     func stop()
+    /// Whether a start for `productID` would open the mouse now, found by opening and closing
+    /// it at once: nothing is watched or kept, and nothing is sent to the mouse. How a run
+    /// whose start failed finds out that Input Monitoring has come into effect after all.
+    func canWatch(productID: Int) -> Bool
 }
 
 /// Watches HID input report 4 of one Bluetooth mouse (vendor 0x068E and its product id, so
@@ -143,6 +148,37 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
 
     var isRunning: Bool { manager != nil }
 
+    /// Whether a start opened the mouse, from what IOKit said: `managerOpen` the manager's own
+    /// open, `present` how many of the mouse's HID devices are there, `opened` how many of
+    /// them opened. Any one open is a watch that works. With none there, a manager that opened
+    /// is waiting for the mouse to show up, and the matching callback brings it; one refused
+    /// (kIOReturnNotPermitted: Input Monitoring not in effect for this run) would never see a
+    /// report, so that is a failure too, not a watch that silently delivers nothing.
+    static func startWorks(managerOpen: IOReturn, present: Int, opened: Int) -> Bool {
+        opened > 0 || (present == 0 && managerOpen == kIOReturnSuccess)
+    }
+
+    private static func matching(productID: Int) -> CFDictionary {
+        [kIOHIDVendorIDKey: BLEProtocol.vendorId, kIOHIDProductIDKey: productID] as CFDictionary
+    }
+
+    func canWatch(productID: Int) -> Bool {
+        guard IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted else { return false }
+        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+        IOHIDManagerSetDeviceMatching(manager, Self.matching(productID: productID))
+        let managerOpen = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
+        let present = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> ?? []
+        var opened = 0
+        for device in present where IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess {
+            IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
+            opened += 1
+        }
+        GestureDebugLog.log(String(format: "PRIVKEY open check for product %04x", productID)
+                            + ": open=\(HIDDevice.HIDError.hex(managerOpen)), \(opened) of \(present.count) devices opened")
+        return Self.startWorks(managerOpen: managerOpen, present: present.count, opened: opened)
+    }
+
     func start(productID: Int, onEvent: @escaping (PrivateKeyEvent) -> Void) -> Bool {
         if isRunning, self.productID == productID {
             self.onEvent = onEvent
@@ -154,8 +190,7 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
             return false
         }
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
-        let matching: [String: Int] = [kIOHIDVendorIDKey: BLEProtocol.vendorId, kIOHIDProductIDKey: productID]
-        IOHIDManagerSetDeviceMatching(manager, matching as CFDictionary)
+        IOHIDManagerSetDeviceMatching(manager, Self.matching(productID: productID))
         let context = Unmanaged.passRetained(self).toOpaque()
         IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, device in
             guard let context else { return }
@@ -179,7 +214,8 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
         present.forEach(watch)
         GestureDebugLog.log(String(format: "PRIVKEY watch started for product %04x", productID)
                             + ": open=\(HIDDevice.HIDError.hex(opened)), \(watched.count) of \(present.count) devices opened")
-        guard present.isEmpty || !watched.isEmpty else {
+        // Nothing of a failed start is kept: the next start makes a new manager and opens again.
+        guard Self.startWorks(managerOpen: opened, present: present.count, opened: watched.count) else {
             stop()
             return false
         }

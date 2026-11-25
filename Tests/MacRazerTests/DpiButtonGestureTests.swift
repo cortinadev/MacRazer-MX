@@ -161,6 +161,30 @@ final class DpiButtonGestureTests: XCTestCase {
         XCTAssertEqual(emitted.actions, [])
     }
 
+    /// DPI Cycle is never offered here, as software can't cycle this mouse's DPI. One in saved
+    /// data does nothing: not as the click, a direction, nor the whole action, and nothing asks
+    /// for a cycle.
+    func testDpiCycleDoesNothingThroughF20() {
+        let emitted = Emitted()
+        var cycles = 0
+        let everywhere = GestureBindings(click: .dpiCycle, up: .dpiCycle, down: .dpiCycle, left: .dpiCycle,
+                                         right: .dpiCycle)
+        let r = remapper(emitted, action: .gesture(everywhere))
+        r.onDpiCycleRequest = { cycles += 1 }
+        XCTAssertEqual(r.gestureSlotLeadingChoices(of: ButtonRemapper.dpiButton), [.passthrough])
+        f20(r, down: true)
+        f20(r, down: false)
+        f20(r, down: true)
+        move(r, dy: -100)
+        f20(r, down: false)
+        r.saveDpiSoftwareAction(.dpiCycle)
+        r.confirmDpiBridge(binding: .softwareBridge)
+        f20(r, down: true)
+        f20(r, down: false)
+        XCTAssertEqual(emitted.actions, [])
+        XCTAssertEqual(cycles, 0)
+    }
+
     /// The key repeats while the button is held. A repeat is the same press: it's swallowed
     /// and doesn't start the hold over, so the movement before it still counts.
     func testKeyRepeatsDoNotRestartTheHold() {

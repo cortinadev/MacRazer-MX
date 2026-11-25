@@ -10,12 +10,17 @@ import IOKit.hid
 /// What a remapped button does. `.passthrough` lets the original event through; `.keystroke`
 /// suppresses the button and posts a key combo instead. `.gesture` makes it a gesture button:
 /// held and moved, it fires one action per direction; pressed in place, its click action.
+/// `.dpiCycle` steps the DPI stage in software. Only a slot of the DPI button's gesture on a
+/// mouse with private keys offers it (`ButtonRemapper.gestureSlotLeadingChoices`), as there
+/// the firmware no longer cycles DPI in driver mode; anywhere else it does nothing
+/// (`ButtonRemapper.apply`). A new case: everything saved before it decodes as it did.
 enum RemapAction: Codable, Equatable, Sendable {
     case passthrough
     case keystroke(keyCode: UInt16, modifiers: UInt64, name: String)
     case mouseButton(button: Int, name: String)
     case doubleClick
     case mediaKey(code: Int, name: String)
+    case dpiCycle
     indirect case gesture(GestureBindings)
 
     var label: String {
@@ -23,6 +28,7 @@ enum RemapAction: Codable, Equatable, Sendable {
         case .passthrough: return "None"
         case .keystroke(_, _, let name), .mouseButton(_, let name), .mediaKey(_, let name): return name
         case .doubleClick: return "Double Click"
+        case .dpiCycle: return "DPI Cycle"
         case .gesture: return "Gesture"
         }
     }
@@ -80,8 +86,11 @@ struct GestureBindings: Codable, Equatable, Sendable {
     }
 
     /// The defaults for a mouse button, whose click keeps doing what the button did before.
-    static func defaults(for button: Int) -> GestureBindings {
-        defaults(click: ButtonRemapper.originalClick(for: button))
+    /// The DPI button of a mouse with private keys (`privateKeys`) clicks DPI Cycle, as it does
+    /// stock; on any other mouse software can't cycle DPI, and its click starts as None.
+    static func defaults(for button: Int, privateKeys: Bool = false) -> GestureBindings {
+        let dpiCycles = privateKeys && button == ButtonRemapper.dpiButton
+        return defaults(click: dpiCycles ? .dpiCycle : ButtonRemapper.originalClick(for: button))
     }
 }
 
@@ -161,10 +170,18 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// (`dpiDriverModeChanged`), on a mouse with private keys. Its keys count only while it is
     /// `.engaged` (`privateKeysActive`).
     @Published private(set) var dpiDriverMode: DpiDriverModeState = .off
-    /// The DPI button's private keys couldn't be watched: Input Monitoring isn't in effect for
-    /// this run (a grant only works after a relaunch). Driver mode isn't wanted then, so the
-    /// button keeps cycling DPI rather than doing nothing. Cleared by an explicit Re-check.
+    /// The DPI button's private keys couldn't be watched: the mouse's HID device wouldn't open
+    /// while Input Monitoring reads as granted, which macOS sometimes applies to a running app
+    /// only once it is reopened. Driver mode isn't wanted then (`DpiDriverModeNeed.relaunch`),
+    /// so the button keeps cycling DPI rather than doing nothing. Not for the whole run: it is
+    /// dropped when Input Monitoring reads as not granted (a grant after that is tried afresh),
+    /// and whenever the permissions are looked at again and the device opens
+    /// (`retryBlockedPrivateKeys`).
     @Published private(set) var privateKeyInputBlocked = false
+    /// Driver mode for the DPI button waits only for a permission (`DpiDriverModeNeed.waitsForPermission`)
+    /// while the mouse is connected, and so the permissions are looked at every
+    /// `permissionRecheckInterval` (`permissionRecheckTimer`).
+    @Published private(set) var waitsForPermission = false
     /// An F20 key-down was swallowed and its key-up hasn't come yet. Kept across a reinstall
     /// of the tap that keeps the keys, so the key-up of a swallowed press is always swallowed
     /// too; a fresh press sets it again either way (`handleDpiBridge`). Cleared when no tap
@@ -192,6 +209,10 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// (`DpiPrivateKeyWatcher`). Nil: nothing watches the mouse, and the keys come only from
     /// whoever calls `handlePrivateKey`, as tests do.
     private let privateKeySource: PrivateKeySource?
+    /// Whether `waitsForPermission` runs a timer. Only for a remapper whose actions are posted
+    /// for real: a test's would look at the real Accessibility grant, and could install a real
+    /// event tap, from a timer. A test reads `waitsForPermission` instead.
+    private let schedulesPermissionRechecks: Bool
 
     /// `dockSwipes`: by default the session's own (`DockSwipeOutput.system`), but only when
     /// actions are posted for real too. A test that catches the actions (`actionEmitter`)
@@ -206,6 +227,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         self.dockSwipes = dockSwipes ?? (actionEmitter == nil ? .system(userData: Self.magic) : nil)
         self.clock = clock
         self.privateKeySource = privateKeys ?? (actionEmitter == nil ? DpiPrivateKeyWatcher() : nil)
+        self.schedulesPermissionRechecks = actionEmitter == nil
     }
 
     private var tap: CFMachPort?
@@ -281,7 +303,11 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// Pausing ends a gesture hold: its release fires nothing, and is still swallowed as its
     /// press was.
     @Published var remappingPaused = false {
-        didSet { if remappingPaused { gestureHold = nil } }
+        didSet {
+            if remappingPaused { gestureHold = nil }
+            // Waiting for a permission is pointless while the mouse is away.
+            if remappingPaused != oldValue { updatePermissionRecheck() }
+        }
     }
 
     /// Called when a mapped button is pressed while remapping is paused. The mouse is paused
@@ -366,18 +392,20 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         })
     }
 
-    /// Re-check the Accessibility grant (call when the window appears / returns to front).
+    /// Re-check the Accessibility grant (call when the window appears / returns to front, the
+    /// popover opens, and every `permissionRecheckInterval` while `waitsForPermission`). Input
+    /// Monitoring is looked at too, for the DPI button's driver mode (`refreshDpiDriverModeWant`).
     func refreshAccessibility(prompt: Bool) {
         guard !RenderOptions.isActive else { return }
         // An explicit Re-check is the user saying they changed a permission: try the
-        // keyboard-capable tap again, and the DPI button's private keys.
-        if prompt {
-            keyboardTapRefused = false
-            privateKeyInputBlocked = false
-        }
+        // keyboard-capable tap again.
+        if prompt { keyboardTapRefused = false }
+        // Whatever brought us here, a run that couldn't watch the DPI button's keys may now.
+        retryBlockedPrivateKeys()
         defer { refreshDpiDriverModeWant() }
         // Use the literal key to avoid touching the non-Sendable global CFString symbol.
         let granted = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": prompt] as CFDictionary)
+        // Published on every look, unchanged or not: the scroll tap retries on it (AppDelegate).
         accessibilityGranted = granted
         if granted {
             installTapIfNeeded()
@@ -402,8 +430,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         runLoopSource = nil
         tapMask = 0
         gestureHold = nil
-        eventTapAvailable = false
-        keyboardCaptureAvailable = false
+        if eventTapAvailable { eventTapAvailable = false }
+        if keyboardCaptureAvailable { keyboardCaptureAvailable = false }
     }
 
     func openAccessibilitySettings() { SystemSettingsPanes.openAccessibility() }
@@ -477,9 +505,9 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// A click of `button` itself. A gesture's click re-posts it, so a press without a swipe
     /// still does what the button did before: the wheel click still opens a link in a new
     /// tab, Back still goes back. `.passthrough` (nothing) for the DPI button (`dpiButton`)
-    /// and the primary buttons, which have no click of their own to post. On a mouse with
-    /// private keys the DPI button's None cycles DPI (`handlePrivateKey`); elsewhere software
-    /// can't, so a DPI gesture's click does nothing until one is chosen.
+    /// and the primary buttons, which have no click of their own to post. A new DPI gesture on
+    /// a mouse with private keys clicks DPI Cycle instead (`GestureBindings.defaults(for:privateKeys:)`);
+    /// elsewhere software can't cycle DPI, so its click does nothing until one is chosen.
     static func originalClick(for button: Int) -> RemapAction {
         let name: String
         switch button {
@@ -524,7 +552,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         guard tap == nil || tapMask != mask else {
             if let tap {
                 if !CGEvent.tapIsEnabled(tap: tap) { CGEvent.tapEnable(tap: tap, enable: true) }
-                eventTapAvailable = CGEvent.tapIsEnabled(tap: tap)
+                let enabled = CGEvent.tapIsEnabled(tap: tap)
+                if eventTapAvailable != enabled { eventTapAvailable = enabled }
                 refreshKeyboardCaptureStatus()
             }
             return
@@ -643,9 +672,10 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     }
 
     private func refreshKeyboardCaptureStatus() {
-        keyboardCaptureAvailable = Self.eventTaps()?.contains {
+        let available = Self.eventTaps()?.contains {
             $0.tappingProcess == getpid() && $0.enabled && Self.includesKeyboardEvents($0.eventsOfInterest)
         } ?? false
+        if keyboardCaptureAvailable != available { keyboardCaptureAvailable = available }
     }
 
     /// What `competingTapPIDs` needs from a `CGEventTapInformation`.
@@ -869,7 +899,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         // Mutated in place: a copy of the hold per event would be wasted work at this rate.
         if let direction = gestureHold?.recognizer.move(dx: dx, dy: dy), let hold = gestureHold {
             GestureDebugLog.log("FIRE \(direction) after \(debugMoveCount) moves net=(\(hold.recognizer.dx), \(hold.recognizer.dy)) action=\(hold.bindings.action(for: direction).label)")
-            apply(hold.bindings.action(for: direction))
+            perform(hold.bindings.action(for: direction), trigger: trigger)
         }
         return true
     }
@@ -924,7 +954,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             return true
         }
         gestureHold = nil
-        if hold.recognizer.end(), hold.clicksOnRelease { apply(hold.bindings.click) }
+        if hold.recognizer.end(), hold.clicksOnRelease { perform(hold.bindings.click, trigger: trigger) }
         return true
     }
 
@@ -933,13 +963,25 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         gestureHold = nil
     }
 
+    /// Fires one of a gesture's actions for a hold of `trigger`. DPI Cycle steps the DPI stage
+    /// (`onDpiCycleRequest`) for the DPI button of a mouse with private keys in driver mode,
+    /// where the firmware no longer does; anywhere else it goes to `apply`, which leaves it
+    /// inert, as it does every action that isn't DPI Cycle to post.
+    private func perform(_ action: RemapAction, trigger: Int) {
+        guard action == .dpiCycle, trigger == Self.dpiButton, privateKeysActive else { return apply(action) }
+        GestureDebugLog.log("DPI cycle requested")
+        onDpiCycleRequest?()
+    }
+
     private func apply(_ action: RemapAction) {
         // Nothing to post for `.passthrough` (a gesture's "None"). A gesture only ever runs
         // from a hold, never as a single action, so one nested in a gesture's slot is inert.
-        guard action != .passthrough, !action.isGesture else { return }
+        // DPI Cycle is the DPI button's, in driver mode (`perform`): here it does nothing, as
+        // a mouse button's mapping, the DPI button's whole action, or any other gesture's slot.
+        guard action != .passthrough, action != .dpiCycle, !action.isGesture else { return }
         if let actionEmitter { actionEmitter(action); return }
         switch action {
-        case .passthrough, .gesture: break
+        case .passthrough, .dpiCycle, .gesture: break
         case .keystroke(let kc, let mods, _): postKeystroke(keyCode: kc, flags: CGEventFlags(rawValue: mods))
         case .mouseButton(let b, _): postMouseClick(b)
         case .doubleClick: postDoubleClick()
@@ -1173,14 +1215,15 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     }
 
     /// How the DPI button carries out `action`. A function the mouse runs itself where it has
-    /// one, so it works without MacRazer: DPI Cycle for None, a mouse button it can send, a key
+    /// one, so it works without MacRazer: DPI Cycle for None and for DPI Cycle (the whole
+    /// button cycling DPI is the firmware's own job), a mouse button it can send, a key
     /// combination it can type. Anything else is MacRazer's: F20 for it to turn into `action`,
     /// or on a mouse with `privateKeys`, DPI Cycle, which the button does with MacRazer closed,
     /// and driver mode while it runs.
     static func dpiButtonAssignment(for action: RemapAction, privateKeys: Bool = false)
         -> (binding: BLEProtocol.DPIButtonBinding, softwareAction: RemapAction?) {
         switch action {
-        case .passthrough:
+        case .passthrough, .dpiCycle:
             return (.dpiCycle, nil)
         case .keystroke(let keyCode, let modifiers, _):
             if let usage = BLEProtocol.hidUsage(forMacKeyCode: keyCode) {
@@ -1210,13 +1253,21 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         return true
     }
 
-    /// What choosing Gesture… for the DPI button does: the defaults, with None as the click
-    /// (`originalClick`), carried out by MacRazer. One that already is a gesture keeps its
-    /// choices and nothing is written, as choosing it again is how the editor is reopened.
+    /// What choosing Gesture… for the DPI button does: `newDpiGesture`, carried out by
+    /// MacRazer. One that already is a gesture keeps its choices and nothing is written, as
+    /// choosing it again is how the editor is reopened.
     @discardableResult
     func makeDpiGesture(controller: MouseController) -> Bool {
         if dpiCycleSoftwareAction?.isGesture == true { return true }
-        return configureDpiButton(.gesture(.defaults(for: Self.dpiButton)), controller: controller)
+        return configureDpiButton(newDpiGesture, controller: controller)
+    }
+
+    /// A new gesture for the DPI button: the defaults, whose click is DPI Cycle on a mouse with
+    /// private keys, so a short press still steps DPI as it does stock, and None elsewhere
+    /// (`GestureBindings.defaults(for:privateKeys:)`). A gesture saved before DPI Cycle was
+    /// its own choice keeps None, which now does nothing on a short press.
+    var newDpiGesture: RemapAction {
+        .gesture(.defaults(for: Self.dpiButton, privateKeys: supportsDpiPrivateKeys))
     }
 
     func dpiCycleLabel(for binding: BLEProtocol.DPIButtonBinding) -> String {
@@ -1257,9 +1308,10 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// The line under the DPI button's menu while an action of MacRazer's is saved.
     var dpiActionStatus: String { supportsDpiPrivateKeys ? dpiPrivateKeyStatus : dpiBridgeStatus }
 
-    /// That line offers the Input Monitoring settings: the keys can't be seen without it.
+    /// That line offers the Input Monitoring settings: the keys can't be seen without it. Not
+    /// once it is granted and only a reopen is missing (`DpiDriverModeNeed.relaunch`).
     var dpiActionNeedsInputMonitoring: Bool {
-        supportsDpiPrivateKeys ? !privateKeyInputAvailable : !keyboardCaptureAvailable
+        supportsDpiPrivateKeys ? currentDpiDriverModeNeed == .inputMonitoring : !keyboardCaptureAvailable
     }
 
     var dpiBridgeStatus: String {
@@ -1271,16 +1323,26 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     }
 
     var dpiPrivateKeyStatus: String {
-        Self.dpiPrivateKeyStatus(permissions: remappingPermissionsGranted, inputMonitoring: privateKeyInputAvailable,
-                                 paused: remappingPaused, driverMode: dpiDriverMode)
+        Self.dpiPrivateKeyStatus(need: currentDpiDriverModeNeed, paused: remappingPaused, driverMode: dpiDriverMode)
     }
 
-    /// The status line on a mouse with private keys: what it needs first, then where its
-    /// driver mode stands (`DpiDriverModeState`), its error in a plain sentence.
-    static func dpiPrivateKeyStatus(permissions: Bool, inputMonitoring: Bool, paused: Bool,
+    /// The status line on a mouse with private keys: what it needs first (`need`), then where
+    /// its driver mode stands (`DpiDriverModeState`), its error in a plain sentence. A missing
+    /// permission is picked up by itself once granted (`waitsForPermission`); a grant macOS
+    /// hasn't applied to this run yet needs the app reopened, and the line says so.
+    static func dpiPrivateKeyStatus(need: DpiDriverModeNeed, paused: Bool,
                                     driverMode: DpiDriverModeState) -> String {
-        if !permissions { return "MacRazer needs Accessibility to carry out this action." }
-        if !inputMonitoring { return "MacRazer needs Input Monitoring to see the DPI button. Turn it on, then relaunch MacRazer." }
+        switch need {
+        case .accessibility:
+            return "MacRazer needs Accessibility to carry out this action."
+        case .inputMonitoring:
+            return "MacRazer needs Input Monitoring to see the DPI button. Turn it on in System Settings."
+        case .relaunch:
+            return "Input Monitoring is on, but macOS hasn't applied it to MacRazer MX yet. "
+                + "Quit and reopen MacRazer MX."
+        case .none, .ready:
+            break
+        }
         if paused { return "Waiting for mouse connection" }
         switch driverMode {
         case .engaged: return "Ready"
@@ -1340,34 +1402,84 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     var onDpiDriverModeWanted: ((Bool) -> Void)?
     /// What it was last told, so it hears each change once.
     private var sentDpiDriverModeWant: Bool?
-    /// A short press of the DPI button with nothing else to do in driver mode, where the
-    /// firmware no longer cycles DPI itself: MacRazer's DPI cycle (`MouseController.cycleDpiStage`).
+    /// DPI Cycle in a slot of the DPI button's gesture, in driver mode, where the firmware no
+    /// longer cycles DPI itself: MacRazer's DPI cycle (`MouseController.cycleDpiStage`).
     /// Set by `observeDpiCycle`; tests catch it.
     var onDpiCycleRequest: (() -> Void)?
 
-    /// Whether the DPI button needs driver mode: a mouse with private keys, an action MacRazer
-    /// carries out, and what carrying it out takes: the event tap (Accessibility) and Input
-    /// Monitoring to see the keys, asked last as it's a system call. Without those the button
-    /// is better left cycling DPI in the firmware than doing nothing at all.
-    static func wantsDpiDriverMode(privateKeys: Bool, action: RemapAction?, permissions: Bool,
-                                   inputMonitoring: () -> Bool) -> Bool {
-        privateKeys && action != nil && permissions && inputMonitoring()
+    /// What driver mode needs now (`DpiDriverModeNeed`), with Input Monitoring read live. Also
+    /// what the status line shows.
+    var currentDpiDriverModeNeed: DpiDriverModeNeed {
+        DpiDriverModeNeed(privateKeys: supportsDpiPrivateKeys, action: dpiCycleSoftwareAction,
+                          permissions: remappingPermissionsGranted,
+                          inputMonitoring: { IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted },
+                          keysBlocked: privateKeyInputBlocked)
     }
 
-    /// Input Monitoring is granted and has worked for the private keys this session.
-    private var privateKeyInputAvailable: Bool {
-        !privateKeyInputBlocked && IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
-    }
+    /// What `refreshDpiDriverModeWant` last worked out, for `updatePermissionRecheck`.
+    private var lastDpiDriverModeNeed = DpiDriverModeNeed.none
+    /// Calls `refreshAccessibility` every `permissionRecheckInterval` while `waitsForPermission`;
+    /// nil otherwise, so nothing polls while no permission is awaited.
+    private var permissionRecheckTimer: Timer?
+    /// How often the permissions are looked at while driver mode waits for one. macOS says
+    /// nothing when Accessibility or Input Monitoring is granted, and the app may not be opened
+    /// in between: without this the DPI button stayed with the firmware until a relaunch.
+    static let permissionRecheckInterval: TimeInterval = 3
 
-    /// Works out whether driver mode is needed, and tells `MouseController` when that changed.
+    /// Works out what driver mode needs, tells `MouseController` when whether it is wanted
+    /// changed, and has the permissions looked at again while only one is missing. Runs
+    /// wherever they are looked at anyway (`refreshAccessibility`: the Buttons page, the
+    /// popover, the app coming to the front, Re-check), and on every change of device, action
+    /// or tap (`installTapIfNeeded`).
     private func refreshDpiDriverModeWant() {
         guard let send = onDpiDriverModeWanted else { return }
-        let want = Self.wantsDpiDriverMode(privateKeys: supportsDpiPrivateKeys, action: dpiCycleSoftwareAction,
-                                           permissions: remappingPermissionsGranted,
-                                           inputMonitoring: { privateKeyInputAvailable })
+        let need = currentDpiDriverModeNeed
+        // The keys were refused while Input Monitoring wasn't granted, or it has been taken
+        // back since: a grant after this is new, and gets a fresh try.
+        if need == .inputMonitoring, privateKeyInputBlocked { privateKeyInputBlocked = false }
+        lastDpiDriverModeNeed = need
+        updatePermissionRecheck()
+        let want = need.wantsDriverMode
         guard want != sentDpiDriverModeWant else { return }
         sentDpiDriverModeWant = want
         send(want)
+    }
+
+    /// Starts or stops the permission timer as `DpiDriverModeNeed.rechecksPermissions` says:
+    /// it runs only while driver mode waits for a permission and the mouse is connected, and
+    /// stops at the first look that finds the permission there or the wait over.
+    private func updatePermissionRecheck() {
+        let waits = lastDpiDriverModeNeed.rechecksPermissions(paused: remappingPaused)
+        if waitsForPermission != waits { waitsForPermission = waits }
+        guard schedulesPermissionRechecks, !RenderOptions.isActive else { return }
+        if waits, permissionRecheckTimer == nil {
+            let timer = Timer(timeInterval: Self.permissionRecheckInterval, repeats: true) { [weak self] _ in
+                self?.refreshAccessibility(prompt: false)
+            }
+            timer.tolerance = 1
+            RunLoop.main.add(timer, forMode: .common)
+            permissionRecheckTimer = timer
+            GestureDebugLog.log("PERMISSIONS DPI button waits for \(lastDpiDriverModeNeed), looking every "
+                                + "\(Int(Self.permissionRecheckInterval)) s")
+        } else if !waits, let timer = permissionRecheckTimer {
+            timer.invalidate()
+            permissionRecheckTimer = nil
+            GestureDebugLog.log("PERMISSIONS DPI button no longer waits (\(lastDpiDriverModeNeed))")
+        }
+    }
+
+    /// The DPI button's keys couldn't be watched earlier in this run (`privateKeyInputBlocked`).
+    /// Whether they can now is a try at opening the mouse's HID device that changes nothing on
+    /// the mouse (`PrivateKeySource.canWatch`). If it opens, driver mode is wanted again, and
+    /// the keys are watched for real once it is engaged. Called wherever the permissions are
+    /// looked at (`refreshAccessibility`). The permission timer doesn't run for this alone
+    /// (`DpiDriverModeNeed.relaunch`): the line asks for a reopen instead. Internal so tests
+    /// can call it.
+    func retryBlockedPrivateKeys() {
+        guard privateKeyInputBlocked, supportsDpiPrivateKeys, let productID = activeDeviceID,
+              privateKeySource?.canWatch(productID: productID) == true else { return }
+        GestureDebugLog.log("PRIVKEY the mouse's HID device opens now: driver mode is wanted again")
+        privateKeyInputBlocked = false
     }
 
     /// Driver mode is engaged on the connected mouse with private keys: its keys are
@@ -1385,7 +1497,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// Watches the private keys exactly while they are MacRazer's to act on. When they stop
     /// being so (driver mode lost, the mouse gone, another mouse), a hold of the DPI button
     /// ends: its release may never come. A mouse whose keys can't be watched doesn't need
-    /// driver mode (`privateKeyInputBlocked`), so it goes back to normal.
+    /// driver mode (`privateKeyInputBlocked`), so it goes back to normal until they can.
     private func syncPrivateKeySource() {
         guard privateKeysActive, let productID = activeDeviceID else {
             if privateKeySource?.isRunning == true { privateKeySource?.stop() }
@@ -1404,8 +1516,9 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// With a gesture, the long key's press starts a hold as a mouse button's press does, and
     /// its release ends it; the pointer's moves in between are the swipe (`.mouseMoved`, as
     /// for F20). The long key comes only once the button has been held about a second, so a
-    /// short press is the click: the short key fires the Click slot, or with Click on None
-    /// cycles DPI, as the firmware would have (`onDpiCycleRequest`), and a long hold released
+    /// short press is the click: the short key fires the Click slot, which on DPI Cycle steps
+    /// the DPI stage as the firmware would have (`onDpiCycleRequest`) and on None does nothing
+    /// at all (the firmware doesn't cycle DPI in driver mode), and a long hold released
     /// without a swipe fires nothing. Any other action fires on the short key, and a long
     /// press does nothing. Keys count only while driver mode is engaged and the mouse is
     /// connected; the short key's release, and any other code, do nothing.
@@ -1426,35 +1539,31 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             endGesture(trigger: Self.dpiButton)
         case (keys.short, true):
             lastDetectedButton = Self.dpiButton
+            // Not a gesture: the action fires as it is. DPI Cycle as the whole action is inert
+            // (`apply`): the button's own DPI Cycle (default) is the firmware's.
             guard case .gesture(let bindings) = action else { return apply(action) }
-            if bindings.click == .passthrough {
-                GestureDebugLog.log("DPI cycle requested")
-                onDpiCycleRequest?()
-            } else {
-                apply(bindings.click)
-            }
+            GestureDebugLog.log("short press: Click is \(bindings.click.label)")
+            perform(bindings.click, trigger: Self.dpiButton)
         default:
             break
         }
     }
 
-    /// What a gesture slot's None is called in the editor: "DPI Cycle" for the DPI button's
-    /// Click on a mouse with private keys, where a short press with nothing else to do cycles
-    /// DPI (`handlePrivateKey`), and "None" everywhere else.
-    static func gestureNoneTitle(slot: GestureSlot, button: Int, privateKeys: Bool) -> String {
-        privateKeys && button == dpiButton && slot == .click ? "DPI Cycle" : "None"
+    /// The choices a gesture slot's menu starts with, before the usual ones: None, and DPI
+    /// Cycle on the DPI button of a mouse with private keys, where it steps the DPI stage in
+    /// driver mode (`perform`): on a short press in Click, on a swipe in a direction. Every
+    /// slot of that gesture offers it; no other button's, and no other mouse's.
+    static func gestureSlotLeadingChoices(button: Int, privateKeys: Bool) -> [RemapAction] {
+        privateKeys && button == dpiButton ? [.passthrough, .dpiCycle] : [.passthrough]
     }
 
-    func gestureNoneTitle(slot: GestureSlot, of button: Int) -> String {
-        Self.gestureNoneTitle(slot: slot, button: button, privateKeys: supportsDpiPrivateKeys)
+    func gestureSlotLeadingChoices(of button: Int) -> [RemapAction] {
+        Self.gestureSlotLeadingChoices(button: button, privateKeys: supportsDpiPrivateKeys)
     }
 
-    /// A gesture slot's label in the editor: its action's, with None named as above.
+    /// A gesture slot's label in the editor: its action's, None included.
     func gestureSlotLabel(_ slot: GestureSlot, of button: Int) -> String {
-        guard let action = gestureBindings(for: button)?[slot], action != .passthrough else {
-            return gestureNoneTitle(slot: slot, of: button)
-        }
-        return action.label
+        (gestureBindings(for: button)?[slot] ?? .passthrough).label
     }
 
     // MARK: - Persistence

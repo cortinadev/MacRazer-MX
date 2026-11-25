@@ -16,6 +16,62 @@ enum DpiDriverModeState: Equatable, Sendable {
     case unavailable(String)
 }
 
+/// Whether `ButtonRemapper` wants the DPI button's driver mode, and if it would but can't yet,
+/// what is missing. Pure, so the rules are tested without a mouse or a permission.
+enum DpiDriverModeNeed: Equatable, Sendable, CustomStringConvertible {
+    /// Not wanted: a mouse without private keys, or no action of MacRazer's for its DPI button.
+    case none
+    /// Wanted, with everything it takes.
+    case ready
+    /// Wanted, but Accessibility is off or the event tap couldn't be made.
+    case accessibility
+    /// Wanted, but Input Monitoring isn't granted (`IOHIDCheckAccess`), so the keys can't be seen.
+    case inputMonitoring
+    /// Wanted, and Input Monitoring reads as granted, but the mouse's HID device wouldn't open
+    /// in this run (`ButtonRemapper.privateKeyInputBlocked`): macOS sometimes applies the grant
+    /// to a running app only once it is reopened.
+    case relaunch
+
+    /// The DPI button needs driver mode: a mouse with private keys, an action MacRazer carries
+    /// out, and what carrying it out takes: the event tap (Accessibility), Input Monitoring to
+    /// see the keys, asked last as it's a system call, and keys that have opened in this run.
+    /// Without those the button is better left cycling DPI in the firmware than doing nothing.
+    init(privateKeys: Bool, action: RemapAction?, permissions: Bool, inputMonitoring: () -> Bool,
+         keysBlocked: Bool) {
+        if !privateKeys || action == nil {
+            self = .none
+        } else if !permissions {
+            self = .accessibility
+        } else if !inputMonitoring() {
+            self = .inputMonitoring
+        } else {
+            self = keysBlocked ? .relaunch : .ready
+        }
+    }
+
+    /// Driver mode is to be engaged.
+    var wantsDriverMode: Bool { self == .ready }
+
+    /// Only a permission stands in the way, and macOS says nothing when one is granted.
+    var waitsForPermission: Bool { self == .accessibility || self == .inputMonitoring }
+
+    /// Whether to look at the permissions every `ButtonRemapper.permissionRecheckInterval`:
+    /// only while one is all that's missing and the mouse is connected (`paused` false), as
+    /// driver mode can't be engaged on a mouse that's away. Not for `relaunch`: looking again
+    /// won't apply the grant, and the status line asks for a reopen.
+    func rechecksPermissions(paused: Bool) -> Bool { waitsForPermission && !paused }
+
+    var description: String {
+        switch self {
+        case .none: "not needed"
+        case .ready: "ready"
+        case .accessibility: "Accessibility"
+        case .inputMonitoring: "Input Monitoring"
+        case .relaunch: "a reopen"
+        }
+    }
+}
+
 /// When the DPI button's driver mode is read and written, apart from the device so the rules
 /// are tested without one. `MouseController` keeps one on its device queue and runs `step`
 /// whenever it has a moment (`Occasion`), and does what it says.

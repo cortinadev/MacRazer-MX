@@ -257,10 +257,11 @@ struct RemapView: View {
                                 .lineLimit(1)
                                 .fixedSize(horizontal: true, vertical: false)
                             Spacer(minLength: 6)
-                            // The DPI button's Click on None cycles DPI on a mouse with
-                            // private keys, and says so.
+                            // None does nothing. The DPI button of a mouse with private keys
+                            // offers DPI Cycle as its own choice next to it.
                             RemapActionMenu(label: remapper.gestureSlotLabel(slot, of: button),
-                                            noneTitle: remapper.gestureNoneTitle(slot: slot, of: button),
+                                            noneTitle: RemapAction.passthrough.label,
+                                            leadingChoices: remapper.gestureSlotLeadingChoices(of: button),
                                             ownClick: ButtonRemapper.originalClick(for: button),
                                             onPick: { remapper.setGestureAction($0, for: slot, of: button) },
                                             onRecord: { recorderError = nil; recordingSlot = slot })
@@ -414,6 +415,10 @@ private struct RemapActionMenu: View {
     let label: String
     /// A button's "None" lets its click through. A gesture slot's does nothing at all.
     var noneTitle = "None (default)"
+    /// The choices at the top of the menu, before Shortcut: None (`noneTitle`) everywhere, and
+    /// DPI Cycle beside it in the DPI button's gesture on a mouse with private keys
+    /// (`ButtonRemapper.gestureSlotLeadingChoices`).
+    var leadingChoices: [RemapAction] = [.passthrough]
     /// The button's own click (`ButtonRemapper.originalClick`), offered under Mouse: a
     /// gesture's slot can't pass the click through, only post it again.
     var ownClick: RemapAction?
@@ -433,7 +438,9 @@ private struct RemapActionMenu: View {
 
     var body: some View {
         Menu {
-            Button(noneTitle) { onPick(.passthrough) }
+            ForEach(leadingChoices, id: \.label) { action in
+                Button(action == .passthrough ? noneTitle : action.label) { onPick(action) }
+            }
             Menu("Shortcut") {
                 ForEach(ButtonRemapper.presets) { p in
                     Button(p.name) { onPick(p.action) }

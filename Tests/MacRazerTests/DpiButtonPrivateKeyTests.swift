@@ -3,6 +3,7 @@
 
 import AppKit
 import CoreGraphics
+import IOKit
 import XCTest
 @testable import MacRazer
 
@@ -28,12 +29,13 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         var dpiCycles = 0
     }
 
-    /// A `PrivateKeySource` that opens nothing: it records starts and stops, can refuse to
-    /// start, and hands on keys as the watcher would.
+    /// A `PrivateKeySource` that opens nothing: it records starts, stops and open checks, can
+    /// refuse to start (and then to pass a check), and hands on keys as the watcher would.
     private final class FakeSource: PrivateKeySource {
         var refuses = false
         private(set) var starts: [Int] = []
         private(set) var stops = 0
+        private(set) var checks: [Int] = []
         private(set) var isRunning = false
         private var onEvent: ((PrivateKeyEvent) -> Void)?
 
@@ -49,6 +51,11 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
             stops += 1
             isRunning = false
             onEvent = nil
+        }
+
+        func canWatch(productID: Int) -> Bool {
+            checks.append(productID)
+            return !refuses
         }
 
         func send(_ code: UInt8, down: Bool) { onEvent?(PrivateKeyEvent(code: code, isDown: down)) }
@@ -290,17 +297,102 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         XCTAssertEqual(emitted.dpiCycles, 0)
     }
 
-    /// With Click on None (the default, labelled DPI Cycle), a short press cycles DPI as the
-    /// firmware would have, and nothing else.
-    func testTheShortKeyCyclesDpiWhenClickIsNone() {
+    /// With Click on None a short press does nothing at all: no action, and no DPI cycle,
+    /// which the firmware doesn't do either in driver mode.
+    func testAShortPressWithClickOnNoneDoesNothing() {
         let emitted = Emitted()
-        let defaults = GestureBindings.defaults(for: ButtonRemapper.dpiButton)
-        XCTAssertEqual(defaults.click, .passthrough)
-        let r = remapper(emitted, action: .gesture(defaults))
+        var quiet = bindings
+        quiet.click = .passthrough
+        let r = remapper(emitted, action: .gesture(quiet))
         shortPress(r)
         shortPress(r)
-        XCTAssertEqual(emitted.dpiCycles, 2, "one cycle per press")
+        XCTAssertEqual(emitted.dpiCycles, 0, "None asks for no cycle")
         XCTAssertEqual(emitted.actions, [])
+        XCTAssertNil(r.gestureHold)
+    }
+
+    /// With Click on DPI Cycle a short press steps the DPI stage as the firmware would have:
+    /// exactly one cycle per press, and nothing else. The short key's release adds none.
+    func testAShortPressWithClickOnDpiCycleCyclesOncePerPress() {
+        let emitted = Emitted()
+        var cycling = bindings
+        cycling.click = .dpiCycle
+        let r = remapper(emitted, action: .gesture(cycling))
+        key(r, keys.short, down: true)
+        XCTAssertEqual(emitted.dpiCycles, 1, "at the press")
+        key(r, keys.short, down: false)
+        XCTAssertEqual(emitted.dpiCycles, 1, "nothing at the release")
+        shortPress(r)
+        shortPress(r)
+        XCTAssertEqual(emitted.dpiCycles, 3, "one cycle per press")
+        XCTAssertEqual(emitted.actions, [], "DPI Cycle is never posted as an action")
+    }
+
+    /// DPI Cycle in a direction steps the DPI stage once, when the swipe fires, as any other
+    /// action in a slot does.
+    func testDpiCycleInADirectionCyclesOncePerSwipe() {
+        let emitted = Emitted()
+        var cycling = bindings
+        cycling.up = .dpiCycle
+        let r = remapper(emitted, action: .gesture(cycling))
+        key(r, keys.long, down: true)
+        move(r, dy: -80)
+        move(r, dy: -80)
+        key(r, keys.long, down: false)
+        XCTAssertEqual(emitted.dpiCycles, 1)
+        XCTAssertEqual(emitted.actions, [])
+        key(r, keys.long, down: true)
+        move(r, dy: 80)
+        key(r, keys.long, down: false)
+        XCTAssertEqual(emitted.actions, [bindings.down], "the other directions are unchanged")
+        XCTAssertEqual(emitted.dpiCycles, 1)
+    }
+
+    /// DPI Cycle does nothing anywhere but a slot of this mouse's DPI gesture in driver mode:
+    /// as the DPI button's whole action, before driver mode is engaged, in a side button's
+    /// gesture or as a side button's mapping. No action is posted and no cycle is asked for.
+    func testDpiCycleIsInertAnywhereElse() {
+        let everywhere = GestureBindings(click: .dpiCycle, up: .dpiCycle, down: .dpiCycle, left: .dpiCycle,
+                                         right: .dpiCycle)
+        let emitted = Emitted()
+        let whole = remapper(emitted, action: .dpiCycle, name: "\(#function)-whole")
+        shortPress(whole)
+        key(whole, keys.long, down: true)
+        move(whole, dy: -100)
+        key(whole, keys.long, down: false)
+
+        let notEngaged = remapper(emitted, action: .gesture(everywhere), engaged: false,
+                                  name: "\(#function)-not engaged")
+        shortPress(notEngaged)
+
+        let side = remapper(emitted, action: nil, name: "\(#function)-side")
+        side.saveDpiSoftwareAction(nil)
+        side.setAction(.gesture(everywhere), for: 3)
+        side.setAction(.dpiCycle, for: 4)
+        func click(_ button: CGMouseButton, dy: Int64 = 0) {
+            let down = CGEvent(mouseEventSource: nil, mouseType: .otherMouseDown, mouseCursorPosition: .zero,
+                               mouseButton: button)!
+            down.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+            _ = side.handle(type: .otherMouseDown, event: down)
+            if dy != 0 {
+                let drag = CGEvent(mouseEventSource: nil, mouseType: .otherMouseDragged, mouseCursorPosition: .zero,
+                                   mouseButton: button)!
+                drag.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+                drag.setIntegerValueField(.mouseEventDeltaY, value: dy)
+                _ = side.handle(type: .otherMouseDragged, event: drag)
+            }
+            let up = CGEvent(mouseEventSource: nil, mouseType: .otherMouseUp, mouseCursorPosition: .zero,
+                             mouseButton: button)!
+            up.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button.rawValue))
+            _ = side.handle(type: .otherMouseUp, event: up)
+        }
+        let back = CGMouseButton(rawValue: 3)!, forward = CGMouseButton(rawValue: 4)!
+        click(back)
+        click(back, dy: -100)
+        click(forward)
+
+        XCTAssertEqual(emitted.actions, [])
+        XCTAssertEqual(emitted.dpiCycles, 0)
     }
 
     // MARK: Another action
@@ -426,10 +518,12 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         XCTAssertFalse(source.isRunning, "another mouse")
     }
 
-    /// Keys that can't be watched (Input Monitoring not in effect) are remembered, so the
-    /// page offers Input Monitoring and driver mode is no longer wanted (the button goes back
-    /// to cycling DPI rather than doing nothing), and the controller hears so.
-    func testKeysThatCantBeWatchedGiveTheButtonBack() {
+    /// Keys that can't be watched (the mouse's HID device wouldn't open) are remembered, so
+    /// driver mode is no longer wanted (the button goes back to cycling DPI rather than doing
+    /// nothing), and the controller hears so. Not for the rest of the run: a look at the
+    /// permissions tries to open the mouse again, without touching it, and once it opens the
+    /// block is gone.
+    func testKeysThatCantBeWatchedGiveTheButtonBackUntilTheyOpen() {
         let emitted = Emitted()
         let source = FakeSource()
         source.refuses = true
@@ -440,32 +534,108 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         r.dpiDriverModeChanged(.engaged)
         XCTAssertEqual(source.starts, [cobra])
         XCTAssertTrue(r.privateKeyInputBlocked)
-        XCTAssertTrue(r.dpiActionNeedsInputMonitoring)
         XCTAssertEqual(wanted, [false])
-        XCTAssertFalse(ButtonRemapper.wantsDpiDriverMode(privateKeys: true, action: .doubleClick, permissions: true,
-                                                         inputMonitoring: { !r.privateKeyInputBlocked }))
+
+        r.retryBlockedPrivateKeys()
+        XCTAssertEqual(source.checks, [cobra], "an open check, not a start")
+        XCTAssertTrue(r.privateKeyInputBlocked, "still refused")
+        source.refuses = false
+        r.retryBlockedPrivateKeys()
+        XCTAssertEqual(source.checks, [cobra, cobra])
+        XCTAssertFalse(r.privateKeyInputBlocked, "it opens now: driver mode can be wanted again")
+        r.retryBlockedPrivateKeys()
+        XCTAssertEqual(source.checks, [cobra, cobra], "nothing to check once unblocked")
+        XCTAssertEqual(source.starts, [cobra], "the keys are watched again only once driver mode is")
+    }
+
+    /// What a start of the watcher counts as working: any of the mouse's devices open. With
+    /// none there, a manager that opened waits for the mouse; one refused for Input Monitoring
+    /// is a failure, to be tried again, rather than a watch that never delivers a key.
+    func testAWatchWorksOnlyWithADeviceOpenOrAManagerWaitingForOne() {
+        let notPermitted = IOReturn(bitPattern: 0xE00002E2)
+        XCTAssertTrue(DpiPrivateKeyWatcher.startWorks(managerOpen: kIOReturnSuccess, present: 2, opened: 2))
+        XCTAssertTrue(DpiPrivateKeyWatcher.startWorks(managerOpen: notPermitted, present: 2, opened: 1),
+                      "one device is enough")
+        XCTAssertTrue(DpiPrivateKeyWatcher.startWorks(managerOpen: kIOReturnSuccess, present: 0, opened: 0),
+                      "waiting for the mouse to show up")
+        XCTAssertFalse(DpiPrivateKeyWatcher.startWorks(managerOpen: notPermitted, present: 0, opened: 0),
+                       "refused, with nothing to see")
+        XCTAssertFalse(DpiPrivateKeyWatcher.startWorks(managerOpen: notPermitted, present: 2, opened: 0))
+        XCTAssertFalse(DpiPrivateKeyWatcher.startWorks(managerOpen: kIOReturnSuccess, present: 2, opened: 0))
     }
 
     // MARK: Wanting driver mode
 
     /// Driver mode is wanted only for a mouse with private keys, with an action of MacRazer's,
     /// and with what it takes to carry it out. Input Monitoring is asked last, and only then.
+    /// What is missing is named, in that order: Accessibility, Input Monitoring, a reopen.
     func testDriverModeIsWantedOnlyWithEverythingItNeeds() {
         var asked = 0
-        func wants(_ privateKeys: Bool, _ action: RemapAction?, _ permissions: Bool, _ monitoring: Bool) -> Bool {
-            ButtonRemapper.wantsDpiDriverMode(privateKeys: privateKeys, action: action, permissions: permissions,
-                                              inputMonitoring: { asked += 1; return monitoring })
+        func need(_ privateKeys: Bool, _ action: RemapAction?, _ permissions: Bool, _ monitoring: Bool,
+                  blocked: Bool = false) -> DpiDriverModeNeed {
+            DpiDriverModeNeed(privateKeys: privateKeys, action: action, permissions: permissions,
+                              inputMonitoring: { asked += 1; return monitoring }, keysBlocked: blocked)
         }
         let gesture = RemapAction.gesture(bindings)
-        XCTAssertTrue(wants(true, gesture, true, true))
-        XCTAssertTrue(wants(true, .doubleClick, true, true))
+        XCTAssertEqual(need(true, gesture, true, true), .ready)
+        XCTAssertEqual(need(true, .doubleClick, true, true), .ready)
         asked = 0
-        XCTAssertFalse(wants(false, gesture, true, true), "the Basilisk")
-        XCTAssertFalse(wants(true, nil, true, true), "DPI Cycle (default), or a function the mouse runs itself")
-        XCTAssertFalse(wants(true, gesture, false, true), "no event tap")
+        XCTAssertEqual(need(false, gesture, true, true), DpiDriverModeNeed.none, "the Basilisk")
+        XCTAssertEqual(need(true, nil, true, true), DpiDriverModeNeed.none,
+                       "DPI Cycle (default), or a function the mouse runs itself")
+        XCTAssertEqual(need(true, gesture, false, true), .accessibility, "no event tap")
+        XCTAssertEqual(need(true, gesture, false, false, blocked: true), .accessibility)
         XCTAssertEqual(asked, 0, "Input Monitoring isn't asked when something else is missing")
-        XCTAssertFalse(wants(true, gesture, true, false))
-        XCTAssertEqual(asked, 1)
+        XCTAssertEqual(need(true, gesture, true, false), .inputMonitoring)
+        XCTAssertEqual(need(true, gesture, true, false, blocked: true), .inputMonitoring,
+                       "not granted is what is missing, whatever a start said earlier")
+        XCTAssertEqual(need(true, gesture, true, true, blocked: true), .relaunch)
+        XCTAssertEqual(asked, 3)
+
+        let all: [DpiDriverModeNeed] = [.none, .ready, .accessibility, .inputMonitoring, .relaunch]
+        XCTAssertEqual(all.filter(\.wantsDriverMode), [.ready])
+        XCTAssertEqual(all.filter(\.waitsForPermission), [.accessibility, .inputMonitoring])
+    }
+
+    /// The permissions are looked at every few seconds only while driver mode waits for one
+    /// of them and the mouse is connected: not when it is wanted and ready, not needed, nor
+    /// waiting for a reopen that looking again can't bring.
+    func testThePermissionsAreLookedAtAgainOnlyWhileOneIsAllThatsMissing() {
+        XCTAssertTrue(DpiDriverModeNeed.accessibility.rechecksPermissions(paused: false))
+        XCTAssertTrue(DpiDriverModeNeed.inputMonitoring.rechecksPermissions(paused: false))
+        for need: DpiDriverModeNeed in [.accessibility, .inputMonitoring] {
+            XCTAssertFalse(need.rechecksPermissions(paused: true), "\(need): the mouse is away")
+        }
+        for need: DpiDriverModeNeed in [.none, .ready, .relaunch] {
+            XCTAssertFalse(need.rechecksPermissions(paused: false), "\(need)")
+        }
+        XCTAssertGreaterThanOrEqual(ButtonRemapper.permissionRecheckInterval, 1)
+        XCTAssertLessThanOrEqual(ButtonRemapper.permissionRecheckInterval, 10, "a few seconds")
+    }
+
+    /// The remapper waits for a permission exactly while the rules above say so: here, where
+    /// tests have no event tap, while the DPI button has an action of MacRazer's on a
+    /// connected Cobra. It stops as the action goes, the mouse goes offline or is another.
+    func testTheRemapperWaitsForAPermissionOnlyWhileItMatters() {
+        let emitted = Emitted()
+        let r = remapper(emitted, engaged: false)
+        var wanted: [Bool] = []
+        r.onDpiDriverModeWanted = { wanted.append($0) }
+        XCTAssertFalse(r.waitsForPermission, "nothing has looked yet")
+        r.saveDpiSoftwareAction(.doubleClick)
+        XCTAssertTrue(r.waitsForPermission, "no Accessibility in tests")
+        XCTAssertEqual(r.currentDpiDriverModeNeed, .accessibility)
+        r.remappingPaused = true
+        XCTAssertFalse(r.waitsForPermission, "the mouse is away")
+        r.remappingPaused = false
+        XCTAssertTrue(r.waitsForPermission)
+        r.saveDpiSoftwareAction(nil)
+        XCTAssertFalse(r.waitsForPermission, "DPI Cycle (default) needs nothing")
+        r.saveDpiSoftwareAction(.gesture(bindings))
+        XCTAssertTrue(r.waitsForPermission)
+        r.setActiveDevice("PM2533", deviceID: basilisk)
+        XCTAssertFalse(r.waitsForPermission, "the Basilisk has no driver mode")
+        XCTAssertEqual(wanted, [false], "never wanted without the permissions")
     }
 
     /// The controller hears each change once, not every time the remapper looks.
@@ -541,6 +711,11 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         }
         XCTAssertEqual(assignment(.passthrough).0, .dpiCycle)
         XCTAssertNil(assignment(.passthrough).1, "DPI Cycle (default) clears the action")
+        for privateKeys in [true, false] {
+            let a = ButtonRemapper.dpiButtonAssignment(for: .dpiCycle, privateKeys: privateKeys)
+            XCTAssertEqual(a.binding, .dpiCycle, "the whole button cycling DPI is the firmware's DPI Cycle")
+            XCTAssertNil(a.softwareAction)
+        }
         let copy = ButtonRemapper.presets.first { $0.id == "copy" }!.action
         XCTAssertEqual(assignment(copy).0, .keyboardShortcut(hidUsage: 0x06, modifiers: 0x08), "⌘C, typed by the mouse")
         XCTAssertNil(assignment(copy).1)
@@ -559,46 +734,145 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
         XCTAssertEqual(r.dpiCycleLabel(for: .dpiCycle), "DPI Cycle (default)")
     }
 
-    /// The gesture editor calls the DPI button's Click None "DPI Cycle" on this mouse, as
-    /// that's what it does; every other slot, button and mouse keeps "None".
-    func testClickOnNoneIsCalledDpiCycleOnThisMouse() {
+    /// The gesture editor's menus start with None and, for the DPI button on this mouse, DPI
+    /// Cycle beside it as a choice of its own, in every slot. No other button, and the DPI
+    /// button of no other mouse, offers DPI Cycle.
+    func testTheDpiGestureMenusOfferNoneAndDpiCycleOnThisMouseOnly() {
         let dpi = ButtonRemapper.dpiButton
-        XCTAssertEqual(ButtonRemapper.gestureNoneTitle(slot: .click, button: dpi, privateKeys: true), "DPI Cycle")
-        XCTAssertEqual(ButtonRemapper.gestureNoneTitle(slot: .up, button: dpi, privateKeys: true), "None")
-        XCTAssertEqual(ButtonRemapper.gestureNoneTitle(slot: .click, button: 3, privateKeys: true), "None")
-        XCTAssertEqual(ButtonRemapper.gestureNoneTitle(slot: .click, button: dpi, privateKeys: false), "None")
+        XCTAssertEqual(ButtonRemapper.gestureSlotLeadingChoices(button: dpi, privateKeys: true), [.passthrough, .dpiCycle])
+        XCTAssertEqual(ButtonRemapper.gestureSlotLeadingChoices(button: dpi, privateKeys: true).map(\.label),
+                       ["None", "DPI Cycle"])
+        XCTAssertEqual(ButtonRemapper.gestureSlotLeadingChoices(button: dpi, privateKeys: false), [.passthrough],
+                       "the Basilisk: software can't cycle its DPI")
+        for button in [2, 3, 4, 5] {
+            XCTAssertEqual(ButtonRemapper.gestureSlotLeadingChoices(button: button, privateKeys: true), [.passthrough],
+                           ButtonRemapper.label(for: button))
+        }
 
         let emitted = Emitted()
-        var quiet = GestureBindings.defaults(for: dpi)
+        let r = remapper(emitted)
+        XCTAssertEqual(r.gestureSlotLeadingChoices(of: dpi), [.passthrough, .dpiCycle])
+        XCTAssertEqual(r.gestureSlotLeadingChoices(of: 3), [.passthrough])
+        let basilisk = ButtonRemapper(defaults: defaults("\(#function)-basilisk"), actionEmitter: { _ in })
+        basilisk.setActiveDevice("PM2533", deviceID: self.basilisk)
+        XCTAssertEqual(basilisk.gestureSlotLeadingChoices(of: dpi), [.passthrough])
+    }
+
+    /// Each slot shows its action's label: None for none, DPI Cycle for DPI Cycle, which are
+    /// two different choices now.
+    func testTheEditorNamesNoneAndDpiCycleApart() {
+        let dpi = ButtonRemapper.dpiButton
+        let emitted = Emitted()
+        var quiet = GestureBindings.defaults(for: dpi, privateKeys: true)
         quiet.down = .passthrough
         let r = remapper(emitted, action: .gesture(quiet))
         XCTAssertEqual(r.gestureSlotLabel(.click, of: dpi), "DPI Cycle")
         XCTAssertEqual(r.gestureSlotLabel(.down, of: dpi), "None")
         XCTAssertEqual(r.gestureSlotLabel(.up, of: dpi), quiet.up.label)
+        r.setGestureAction(.passthrough, for: .click, of: dpi)
+        XCTAssertEqual(r.gestureSlotLabel(.click, of: dpi), "None")
+        r.setGestureAction(.dpiCycle, for: .left, of: dpi)
+        XCTAssertEqual(r.gestureSlotLabel(.left, of: dpi), "DPI Cycle")
         r.setGestureAction(.doubleClick, for: .click, of: dpi)
         XCTAssertEqual(r.gestureSlotLabel(.click, of: dpi), "Double Click")
+        XCTAssertEqual(r.gestureSlotLabel(.click, of: 3), "None", "not a gesture")
+    }
+
+    // MARK: A new gesture, and one saved before
+
+    /// A new DPI gesture on this mouse clicks DPI Cycle, so a short press steps DPI as it does
+    /// stock. On the Basilisk, and for any other button, the click is what it was.
+    func testANewDpiGestureClicksDpiCycleOnThisMouse() {
+        let dpi = ButtonRemapper.dpiButton
+        XCTAssertEqual(GestureBindings.defaults(for: dpi, privateKeys: true).click, .dpiCycle)
+        XCTAssertEqual(GestureBindings.defaults(for: dpi).click, .passthrough)
+        XCTAssertEqual(GestureBindings.defaults(for: 3, privateKeys: true).click, ButtonRemapper.originalClick(for: 3))
+        XCTAssertEqual(GestureBindings.defaults(for: dpi, privateKeys: true).up,
+                       GestureBindings.defaults(for: dpi).up, "the directions are the usual defaults")
+
+        let emitted = Emitted()
+        let r = remapper(emitted, action: nil)
+        XCTAssertEqual(r.newDpiGesture, .gesture(.defaults(click: .dpiCycle)))
+        r.saveDpiSoftwareAction(r.newDpiGesture)
+        shortPress(r)
+        XCTAssertEqual(emitted.dpiCycles, 1, "a short press of a new gesture cycles DPI")
+        XCTAssertEqual(emitted.actions, [])
+
+        let bridge = ButtonRemapper(defaults: defaults("\(#function)-basilisk"), actionEmitter: { _ in })
+        bridge.setActiveDevice("PM2533", deviceID: basilisk)
+        XCTAssertEqual(bridge.newDpiGesture, .gesture(.defaults(click: .passthrough)))
+    }
+
+    /// What a build from before DPI Cycle was its own choice saved for the DPI gesture: Click
+    /// on None, as `{"passthrough":{}}`. It reads as it was written, and a short press of it
+    /// does nothing now, no DPI cycle included; it isn't turned into DPI Cycle. DPI Cycle
+    /// itself is saved under a key of its own, and reads back.
+    func testAGestureSavedBeforeDpiCycleKeepsNone() throws {
+        let saved = #"""
+        {"gesture":{"_0":{
+          "click":{"passthrough":{}},
+          "up":{"keystroke":{"keyCode":126,"modifiers":10747904,"name":"Mission Control  ⌃↑"}},
+          "down":{"keystroke":{"keyCode":125,"modifiers":10747904,"name":"App Exposé  ⌃↓"}},
+          "left":{"keystroke":{"keyCode":123,"modifiers":10747904,"name":"Space Left  ⌃←"}},
+          "right":{"keystroke":{"keyCode":124,"modifiers":10747904,"name":"Space Right  ⌃→"}}
+        }}}
+        """#
+        let decoded = try JSONDecoder().decode(RemapAction.self, from: Data(saved.utf8))
+        XCTAssertEqual(decoded, .gesture(.defaults(click: .passthrough)))
+        XCTAssertEqual(try JSONDecoder().decode(RemapAction.self, from: Data(#"{"passthrough":{}}"#.utf8)), .passthrough)
+
+        let store = defaults(#function)
+        store.set(Data(saved.utf8), forKey: "dpiCycleSoftwareAction-COBRA-BT")
+        let emitted = Emitted()
+        let r = ButtonRemapper(defaults: store, actionEmitter: { emitted.actions.append($0) })
+        r.onDpiCycleRequest = { emitted.dpiCycles += 1 }
+        r.setActiveDevice("COBRA-BT", deviceID: cobra)
+        r.dpiDriverModeChanged(.engaged)
+        XCTAssertEqual(r.dpiCycleSoftwareAction, decoded, "loaded as saved")
+        XCTAssertEqual(r.gestureSlotLabel(.click, of: ButtonRemapper.dpiButton), "None")
+        shortPress(r)
+        XCTAssertEqual(emitted.dpiCycles, 0)
+        XCTAssertEqual(emitted.actions, [])
+        key(r, keys.long, down: true)
+        move(r, dy: -80)
+        key(r, keys.long, down: false)
+        XCTAssertEqual(emitted.actions, [GestureBindings.defaults(click: .passthrough).up],
+                       "the gesture itself works as before")
+
+        let encoded = try JSONEncoder().encode(RemapAction.dpiCycle)
+        XCTAssertEqual(String(decoding: encoded, as: UTF8.self), #"{"dpiCycle":{}}"#)
+        XCTAssertEqual(try JSONDecoder().decode(RemapAction.self, from: encoded), .dpiCycle)
+        let withDpiCycle = RemapAction.gesture(.defaults(click: .dpiCycle))
+        XCTAssertEqual(try JSONDecoder().decode(RemapAction.self, from: JSONEncoder().encode(withDpiCycle)), withDpiCycle)
+        XCTAssertEqual(RemapAction.dpiCycle.label, "DPI Cycle")
+        XCTAssertFalse(RemapAction.dpiCycle.isGesture)
     }
 
     // MARK: What the page says
 
     /// The status line: what is missing first, then where driver mode stands, its error as it
-    /// came.
+    /// came. A missing Input Monitoring no longer asks for a relaunch, as it is picked up by
+    /// itself; a grant macOS hasn't applied to this run says plainly to quit and reopen.
     func testTheStatusLineSaysWhatIsMissingThenWhereDriverModeStands() {
-        func status(_ mode: DpiDriverModeState, permissions: Bool = true, monitoring: Bool = true,
-                    paused: Bool = false) -> String {
-            ButtonRemapper.dpiPrivateKeyStatus(permissions: permissions, inputMonitoring: monitoring,
-                                               paused: paused, driverMode: mode)
+        func status(_ mode: DpiDriverModeState, need: DpiDriverModeNeed = .ready, paused: Bool = false) -> String {
+            ButtonRemapper.dpiPrivateKeyStatus(need: need, paused: paused, driverMode: mode)
         }
-        XCTAssertTrue(status(.engaged, permissions: false).contains("Accessibility"))
-        XCTAssertTrue(status(.engaged, monitoring: false).contains("Input Monitoring"))
+        XCTAssertEqual(status(.engaged, need: .accessibility), "MacRazer needs Accessibility to carry out this action.")
+        XCTAssertEqual(status(.off, need: .inputMonitoring),
+                       "MacRazer needs Input Monitoring to see the DPI button. Turn it on in System Settings.")
+        XCTAssertEqual(status(.off, need: .relaunch),
+                       "Input Monitoring is on, but macOS hasn't applied it to MacRazer MX yet. Quit and reopen MacRazer MX.")
+        XCTAssertEqual(status(.off, need: .relaunch, paused: true), status(.off, need: .relaunch), "first")
         XCTAssertEqual(status(.engaged, paused: true), "Waiting for mouse connection")
         XCTAssertEqual(status(.engaged), "Ready")
         XCTAssertEqual(status(.engaging), "Setting up the DPI button…")
         XCTAssertEqual(status(.off), "Setting up the DPI button…", "wanted, not yet started")
         XCTAssertEqual(status(.unavailable("The mouse didn't accept it.")), "The mouse didn't accept it.")
+        let needs: [DpiDriverModeNeed] = [.ready, .accessibility, .inputMonitoring, .relaunch]
         for mode: DpiDriverModeState in [.engaged, .engaging, .off] {
-            for text in [status(mode), status(mode, permissions: false), status(mode, monitoring: false)] {
+            for text in needs.map({ status(mode, need: $0) }) {
                 XCTAssertFalse(text.contains("\u{2014}"), text)
+                XCTAssertFalse(text.contains("relaunch"), text)
             }
         }
     }
