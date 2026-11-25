@@ -21,6 +21,16 @@ struct DpiButtonPrivateKeys: Equatable, Sendable {
 struct PrivateKeyEvent: Equatable, Sendable {
     let code: UInt8
     let isDown: Bool
+    /// The key "came up" only because the device that held it went away
+    /// (`PrivateKeyTracker.sourceGone`), the mouse disconnecting most often: the button may
+    /// still be down. Such a release ends a hold but fires nothing a real one would (Hold).
+    let deviceGone: Bool
+
+    init(code: UInt8, isDown: Bool, deviceGone: Bool = false) {
+        self.code = code
+        self.isDown = isDown
+        self.deviceGone = deviceGone
+    }
 }
 
 /// HID input report 4 of a mouse in driver mode: an array of the private keys held now, all
@@ -75,11 +85,11 @@ struct PrivateKeyTracker: Equatable, Sendable {
 
     /// The HID device `source` went away. If its frames were the ones counting, what it held
     /// comes up, as no release will come from it now (the mouse disconnected, most often),
-    /// and the next device to deliver a frame counts.
+    /// marked `deviceGone`, and the next device to deliver a frame counts.
     mutating func sourceGone(_ source: Int) -> [PrivateKeyEvent] {
         guard self.source == source else { return [] }
         self.source = nil
-        return update([])
+        return update([]).map { PrivateKeyEvent(code: $0.code, isDown: $0.isDown, deviceGone: true) }
     }
 }
 
@@ -295,7 +305,8 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isRunning, self.generation == generation else { return }
             for event in events {
-                GestureDebugLog.log(String(format: "PRIVKEY %@ %02x", event.isDown ? "down" : "up", event.code))
+                GestureDebugLog.log(String(format: "PRIVKEY %@ %02x", event.isDown ? "down" : "up", event.code)
+                                    + (event.deviceGone ? " (device gone)" : ""))
                 self.onEvent?(event)
             }
         }

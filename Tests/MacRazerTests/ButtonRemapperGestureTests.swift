@@ -98,6 +98,22 @@ final class ButtonRemapperGestureTests: XCTestCase {
         XCTAssertEqual(emitted.actions, [bindings.click])
     }
 
+    /// A side button has no short and long press: a press without a swipe is its Click,
+    /// however long it is held, and a Hold that turns up in its saved data never fires. The
+    /// editor doesn't list Hold for it.
+    func testHoldIsInertOnASideButton() {
+        let emitted = Emitted()
+        var holding = bindings
+        holding.hold = .doubleClick
+        let r = ButtonRemapper(defaults: defaults(), actionEmitter: { emitted.actions.append($0) })
+        r.setMappings([back: .gesture(holding)])
+        send(r, .otherMouseDown)
+        send(r, .otherMouseDragged, dx: 5)
+        send(r, .otherMouseUp)
+        XCTAssertEqual(emitted.actions, [bindings.click])
+        XCTAssertFalse(r.gestureSlots(of: back).contains(.hold))
+    }
+
     /// While the mouse is offline a gesture button behaves as every mapped button does today:
     /// it goes through (it may be another mouse's) and its press asks for a check.
     func testWhilePausedTheGestureButtonPassesThrough() {

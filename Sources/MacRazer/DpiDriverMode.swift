@@ -23,9 +23,13 @@ enum DpiDriverModeNeed: Equatable, Sendable, CustomStringConvertible {
     case none
     /// Wanted, with everything it takes.
     case ready
-    /// Wanted, but Accessibility is off or the event tap couldn't be made.
+    /// Wanted, but Accessibility is off or the event tap couldn't be made. A grant applies to
+    /// the running app, and is picked up by looking again (`rechecksPermissions`).
     case accessibility
-    /// Wanted, but Input Monitoring isn't granted (`IOHIDCheckAccess`), so the keys can't be seen.
+    /// Wanted, but Input Monitoring isn't granted (`IOHIDCheckAccess`), so the keys can't be
+    /// seen. A grant made while MacRazer runs takes effect only once it is reopened: on macOS
+    /// 26.3 `IOHIDCheckAccess` in the running process kept saying not granted after it was
+    /// turned on, and the reopened app had it. So the page asks for both (`needsReopen`).
     case inputMonitoring
     /// Wanted, and Input Monitoring reads as granted, but the mouse's HID device wouldn't open
     /// in this run (`ButtonRemapper.privateKeyInputBlocked`): macOS sometimes applies the grant
@@ -36,6 +40,8 @@ enum DpiDriverModeNeed: Equatable, Sendable, CustomStringConvertible {
     /// out, and what carrying it out takes: the event tap (Accessibility), Input Monitoring to
     /// see the keys, asked last as it's a system call, and keys that have opened in this run.
     /// Without those the button is better left cycling DPI in the firmware than doing nothing.
+    /// Input Monitoring is read in the running process (`IOHIDCheckAccess`), which may not see
+    /// a grant made after it started (see `inputMonitoring`).
     init(privateKeys: Bool, action: RemapAction?, permissions: Bool, inputMonitoring: () -> Bool,
          keysBlocked: Bool) {
         if !privateKeys || action == nil {
@@ -57,9 +63,17 @@ enum DpiDriverModeNeed: Equatable, Sendable, CustomStringConvertible {
 
     /// Whether to look at the permissions every `ButtonRemapper.permissionRecheckInterval`:
     /// only while one is all that's missing and the mouse is connected (`paused` false), as
-    /// driver mode can't be engaged on a mouse that's away. Not for `relaunch`: looking again
-    /// won't apply the grant, and the status line asks for a reopen.
+    /// driver mode can't be engaged on a mouse that's away. For Input Monitoring too, though
+    /// a grant has so far needed a reopen: harmless, and it carries on by itself if macOS ever
+    /// applies one to the running app. Not for `relaunch`: the grant is already there, and
+    /// looking again won't apply it.
     func rechecksPermissions(paused: Bool) -> Bool { waitsForPermission && !paused }
+
+    /// MacRazer has to be reopened before the DPI button can be seen: Input Monitoring, which
+    /// a grant made while it runs needs, or a grant macOS hasn't applied to this run
+    /// (`relaunch`). The status line says so, and the page offers a button that reopens it
+    /// (`ButtonRemapper.reopenApp`).
+    var needsReopen: Bool { self == .inputMonitoring || self == .relaunch }
 
     var description: String {
         switch self {

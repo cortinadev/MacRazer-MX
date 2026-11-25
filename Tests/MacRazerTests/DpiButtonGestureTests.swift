@@ -150,6 +150,19 @@ final class DpiButtonGestureTests: XCTestCase {
         XCTAssertEqual(emitted.actions, [bindings.click])
     }
 
+    /// F20 has no short and long press: a press in place is the Click, and a Hold that turns
+    /// up in saved data never fires. The editor doesn't list Hold here.
+    func testHoldIsInertThroughF20() {
+        let emitted = Emitted()
+        var holding = bindings
+        holding.hold = .doubleClick
+        let r = remapper(emitted, action: .gesture(holding))
+        f20(r, down: true)
+        f20(r, down: false)
+        XCTAssertEqual(emitted.actions, [bindings.click])
+        XCTAssertFalse(r.gestureSlots(of: ButtonRemapper.dpiButton).contains(.hold))
+    }
+
     /// Software can't cycle DPI, so a DPI gesture's click starts as None, which fires nothing.
     func testTheDefaultClickIsNoneAndFiresNothing() {
         let emitted = Emitted()

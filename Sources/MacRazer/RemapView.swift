@@ -127,15 +127,16 @@ struct RemapView: View {
     /// How the gesture editor says a gesture is made. A mouse button's is held while the mouse
     /// moves, and so is the DPI button's F20. The DPI button of a mouse with private keys
     /// (`ButtonRemapper.supportsDpiPrivateKeys`) starts its gesture only once the firmware has
-    /// recognised a long press, about a second in, and its short press is the click.
-    /// `followsPointer`: the four system swipes follow the pointer on this Mac
-    /// (`DockSwipe.isSupported`), so the text says so.
+    /// recognised a long press, about a second in, its short press is the click, and a long
+    /// press let go without a swipe is Hold. `followsPointer`: the four system swipes follow
+    /// the pointer on this Mac (`DockSwipe.isSupported`), so the text says so.
     nonisolated static func gestureEditorExplanation(longPress: Bool,
                                                      followsPointer: Bool = DockSwipe.isSupported) -> String {
         let swipes = "Mission Control, App Exposé, Space Left and Space Right follow the pointer while you hold it. "
         return longPress
             ? "Hold the DPI button until the gesture starts (about a second), then move the mouse up, "
-                + "down, left or right. " + (followsPointer ? swipes : "") + "A short press does Click."
+                + "down, left or right. " + (followsPointer ? swipes : "") + "A short press does Click. "
+                + "Holding it without moving does Hold when you let go."
             : "Hold the button and move the mouse up, down, left or right. "
                 + (followsPointer ? swipes : "")
                 + "Press and release it without moving to click."
@@ -231,7 +232,8 @@ struct RemapView: View {
         }
     }
 
-    /// A gesture button's five actions, over the page like the key recorder. Each change is
+    /// A gesture button's actions, over the page like the key recorder: Click, Hold where the
+    /// button has one (`ButtonRemapper.gestureSlots(of:)`), and the four swipes. Each change is
     /// saved as it's made, so Done only closes it.
     private func gestureEditor(_ button: Int) -> some View {
         ZStack {
@@ -246,7 +248,7 @@ struct RemapView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 VStack(spacing: 0) {
-                    ForEach(Array(GestureSlot.allCases.enumerated()), id: \.element) { index, slot in
+                    ForEach(Array(remapper.gestureSlots(of: button).enumerated()), id: \.element) { index, slot in
                         if index > 0 { Divider().overlay(Color.primary.opacity(0.1)) }
                         HStack(spacing: 8) {
                             Image(systemName: slot.symbol)
@@ -493,6 +495,7 @@ private extension GestureSlot {
     var symbol: String {
         switch self {
         case .click: "cursorarrow.click"
+        case .hold: "cursorarrow.click.badge.clock"
         case .up: "arrow.up"
         case .down: "arrow.down"
         case .left: "arrow.left"
@@ -616,6 +619,20 @@ private struct DpiCycleBindingSection: View {
                         if remapper.dpiActionNeedsInputMonitoring {
                             Button("Input Monitoring") { SystemSettingsPanes.openInputMonitoring() }
                                 .font(.system(size: 10))
+                        }
+                    }
+                    // Input Monitoring turned on while MacRazer runs takes effect only in a new
+                    // run (`DpiDriverModeNeed.needsReopen`). The reopen quits as Quit does, so
+                    // the DPI button's driver mode is put back first.
+                    if remapper.dpiActionNeedsReopen {
+                        HStack(spacing: 8) {
+                            Button("Reopen MacRazer MX") { remapper.reopenApp() }
+                                .font(.system(size: 10))
+                            if remapper.reopenFailed {
+                                Text(ButtonRemapper.reopenFailedText).font(.system(size: 10))
+                                    .foregroundStyle(Color.batteryMid)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
                         }
                     }
                 }

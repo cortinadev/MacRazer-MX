@@ -337,7 +337,7 @@ final class InteractiveSwipeTests: XCTestCase {
     }
 
     /// Since the long key comes only after a second, a long hold is never the click: released
-    /// without a swipe, it fires nothing and sends nothing to the Dock.
+    /// without a swipe, it fires Hold, None here, so nothing, and sends nothing to the Dock.
     func testOnTheCobraALongHoldWithoutASwipeFiresNothing() {
         let recorded = Recorded()
         let clock = Clock()
@@ -349,6 +349,37 @@ final class InteractiveSwipeTests: XCTestCase {
         XCTAssertEqual(recorded.actions, [], "Click is the short press's")
         XCTAssertEqual(recorded.frames, [])
         XCTAssertNil(r.gestureHold)
+    }
+
+    /// Hold fires for a long press released inside the dead zone, once, with nothing sent to
+    /// the Dock. Once a dock swipe began, a swipe happened: its release fires no Hold, even
+    /// when it was taken back to the start and snapped back.
+    func testOnTheCobraHoldFiresOnlyWhenNoSwipeBegan() {
+        let recorded = Recorded()
+        let clock = Clock()
+        let mute = RemapAction.mediaKey(code: 7, name: "Mute")
+        var holding = bindings
+        holding.hold = mute
+        let r = cobraRemapper(recorded, bindings: holding, clock: clock)
+        longKey(r, down: true)
+        move(r, clock, dx: 8, dy: -6)
+        clock.now += 3
+        longKey(r, down: false)
+        XCTAssertEqual(recorded.actions, [mute], "Hold")
+        XCTAssertEqual(recorded.frames, [], "nothing for the Dock")
+
+        longKey(r, down: true)
+        move(r, clock, dx: 40)
+        move(r, clock, dx: -40)
+        longKey(r, down: false)
+        XCTAssertEqual(recorded.phases, [.began, .changed, .cancelled])
+        XCTAssertEqual(recorded.actions, [mute], "no Hold after a swipe taken back")
+
+        longKey(r, down: true)
+        move(r, clock, dy: -30)
+        longKey(r, down: false)
+        XCTAssertEqual(recorded.phases.last, .ended)
+        XCTAssertEqual(recorded.actions, [mute], "no Hold after a swipe")
     }
 
     /// A slot that isn't a system swipe fires once during the movement, and the hold goes on
