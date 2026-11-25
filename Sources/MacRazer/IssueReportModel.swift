@@ -85,13 +85,13 @@ final class IssueReportModel: ObservableObject {
         sendState = outcome == .sent ? .sent : .failed(outcome)
     }
 
-    /// An email with the report in it, for when Send fails. No name or address: the email
-    /// itself carries both.
-    var mailInstead: URL {
+    /// A new GitHub issue with the report in it, for when Send fails. No name or address: an
+    /// issue is public, and those were offered for Send alone.
+    var issueInstead: URL {
         let report = finalReport()
         let details = report.details.map { "\n\n" + IssueReportOutput.detailLines($0).joined(separator: "\n") } ?? ""
-        return ProjectLinks.mail(subject: "MacRazer issue: " + IssueReportOutput.title(report.description),
-                                 body: report.description + details)
+        return ProjectLinks.newIssue(title: "MacRazer issue: " + IssueReportOutput.title(report.description),
+                                     body: report.description + details)
     }
 
     func openGitHubIssue() {

@@ -38,7 +38,7 @@ final class AppLocationTests: XCTestCase {
 }
 
 final class UpdatePayloadCheckTests: XCTestCase {
-    private let id = "com.macrazer.menubar"
+    private let id = "com.cortinadev.macrazer-mx"
 
     private func reject(_ bundleID: String?, _ version: String?, current: String = "0.2.1")
         -> UpdatePayloadCheck.Rejection? {
@@ -91,18 +91,18 @@ final class UpdatePayloadCheckTests: XCTestCase {
 final class ReleaseDownloadLinkTests: XCTestCase {
     func testDownloadIsPinnedToTheAnnouncedVersion() {
         XCTAssertEqual(ProjectLinks.dmg(forVersion: "0.4.1").absoluteString,
-                       "https://github.com/SorcRR/MacRazer/releases/download/v0.4.1/MacRazer.dmg")
+                       "https://github.com/cortinadev/MacRazer-MX/releases/download/v0.4.1/MacRazer.dmg")
         // Not a constant in disguise: the version really is what picks the release.
         XCTAssertEqual(ProjectLinks.dmg(forVersion: "1.0.0").absoluteString,
-                       "https://github.com/SorcRR/MacRazer/releases/download/v1.0.0/MacRazer.dmg")
+                       "https://github.com/cortinadev/MacRazer-MX/releases/download/v1.0.0/MacRazer.dmg")
     }
 
     func testTheReleasesOwnTagWinsOverTheUsualPrefix() {
         // The list parser accepts a tag with or without the `v`; the download has to as well,
         // or a release tagged `0.6.0` is announced and then 404s on every install.
         XCTAssertEqual(ProjectLinks.dmg(forVersion: "0.6.0", tag: "0.6.0").absoluteString,
-                       "https://github.com/SorcRR/MacRazer/releases/download/0.6.0/MacRazer.dmg")
+                       "https://github.com/cortinadev/MacRazer-MX/releases/download/0.6.0/MacRazer.dmg")
         XCTAssertEqual(ProjectLinks.dmg(forVersion: "0.6.0", tag: "v0.6.0").absoluteString,
-                       "https://github.com/SorcRR/MacRazer/releases/download/v0.6.0/MacRazer.dmg")
+                       "https://github.com/cortinadev/MacRazer-MX/releases/download/v0.6.0/MacRazer.dmg")
     }
 }

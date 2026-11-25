@@ -50,16 +50,16 @@ func reportRunning(_ text: String) -> some View {
     }
 }
 
-/// A failed send's message, with the contact address in it as a link that starts `mail`.
-/// The text is selectable, and Copy email address is there too: on a Mac with no mail app set
-/// up, the link opens nothing.
-func reportSendFailure(_ text: String, mail: URL) -> some View {
-    ReportSendFailure(text: text, mail: mail)
+/// A failed send's message, with the fork's issues page in it as a link that opens `link`, a
+/// new issue already started. The text is selectable, and Copy link is there too, for pasting
+/// the address somewhere else.
+func reportSendFailure(_ text: String, link: URL) -> some View {
+    ReportSendFailure(text: text, link: link)
 }
 
 private struct ReportSendFailure: View {
     let text: String
-    let mail: URL
+    let link: URL
     @State private var copied = false
 
     var body: some View {
@@ -68,9 +68,9 @@ private struct ReportSendFailure: View {
                 .tint(Color.batteryMid)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(copied ? "Copied" : "Copy email address") {
+            Button(copied ? "Copied" : "Copy link") {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(ProjectLinks.contactEmail, forType: .string)
+                NSPasteboard.general.setString(ProjectLinks.issues.absoluteString, forType: .string)
                 copied = true
             }
             .buttonStyle(.link).font(.system(size: 11))
@@ -79,8 +79,8 @@ private struct ReportSendFailure: View {
 
     private var attributed: AttributedString {
         var attributed = AttributedString(text)
-        if let range = attributed.range(of: ProjectLinks.contactEmail) {
-            attributed[range].link = mail
+        if let range = attributed.range(of: ProjectLinks.contact) {
+            attributed[range].link = link
             attributed[range].underlineStyle = .single
         }
         return attributed

@@ -46,7 +46,7 @@ final class DeviceReportOutputTests: XCTestCase {
         XCTAssertTrue(text.contains("> Side buttons feel great"))
         XCTAssertTrue(text.contains("on your clipboard"))
         XCTAssertFalse(text.contains("```json"), "the report itself never goes in the link")
-        XCTAssertTrue(url.absoluteString.hasPrefix("https://github.com/SorcRR/MacRazer/issues/new?"))
+        XCTAssertTrue(url.absoluteString.hasPrefix("https://github.com/cortinadev/MacRazer-MX/issues/new?"))
         let title = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "title" }?.value
         XCTAssertEqual(title, "New mouse: 2 of 3 passed: Razer Naga V3 Pro (0x00C4)")
 

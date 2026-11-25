@@ -597,8 +597,8 @@ struct DeviceTestView: View {
             switch model.sendState {
             case .sending: reportRunning("Sending…")
             case .failed(let outcome):
-                reportSendFailure(Self.sendFailure(outcome), mail: ProjectLinks.mail(
-                    subject: "MacRazer device report" + (report.map { ": \($0.device.name)" } ?? "")))
+                reportSendFailure(Self.sendFailure(outcome), link: ProjectLinks.newIssue(
+                    title: "MacRazer device report" + (report.map { ": \($0.device.name)" } ?? "")))
             case .idle, .sent: EmptyView()
             }
         }
@@ -612,11 +612,12 @@ struct DeviceTestView: View {
             : "MacRazer is free. If it saves you a trip to Windows, a tip keeps it going."
     }
 
-    /// What the report windows say when Send fails, ending with how to reach us by email
-    /// instead. `emailHint` is that ending, as each window puts it.
+    /// What the report windows say when Send fails, ending with how to reach us instead: the
+    /// fork's GitHub issues (`ProjectLinks.contact`), where upstream gives an email address.
+    /// `emailHint` is that ending, as each window puts it; the name is upstream's, kept for merges.
     /// `offersGitHub` is whether the window has an Open GitHub issue button to point to.
     static func sendFailure(_ outcome: DeviceReportSender.Outcome,
-                            emailHint: String = "press Copy and email the report to \(ProjectLinks.contactEmail)",
+                            emailHint: String = "press Copy and paste the report into a new issue at \(ProjectLinks.contact)",
                             offersGitHub: Bool = true) -> String {
         switch outcome {
         case .tooMany:

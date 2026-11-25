@@ -80,8 +80,9 @@ struct CrashReport: Codable, Equatable {
 
 enum CrashReportParser {
     /// The packaged app's bundle ID. A `swift run` build crashes under the same process name
-    /// with no bundle, and those are the developer's own, not reports to offer.
-    static let bundleID = "com.macrazer.menubar"
+    /// with no bundle, and those are the developer's own, not reports to offer. So does
+    /// upstream's MacRazer, installed alongside: its crashes are told apart by this.
+    static let bundleID = "com.cortinadev.macrazer-mx"
     /// `bug_type` for a crash. Hangs and resource reports are other numbers and other formats.
     static let crashBugType = "309"
     /// The deepest stack worth sending. A crash is nearly always in the top few frames, and

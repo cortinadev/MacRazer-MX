@@ -36,6 +36,14 @@ enum AppInfo {
     }
     /// `comparableVersion` for a build with no version: `swift run`.
     static let unversioned = "0"
+
+    /// Whether the app looks for, offers and installs new releases. Off in MacRazer MX: the
+    /// fork publishes no release feed of its own yet, and upstream's must never be surfaced,
+    /// since installing one would replace this build with an app that lacks the fork's features.
+    /// While it's false nothing calls `UpdateChecker`'s checks, and every way to ask for one or
+    /// see its answer (the menu item, the Settings page, the cards) is hidden. The updater is
+    /// kept whole, unreachable rather than removed, so upstream merges stay simple.
+    static let updatesEnabled = false
 }
 
 /// Every URL that identifies this project. Also one place: the repository host appeared in
@@ -50,7 +58,10 @@ enum ElsewhereLinks {
 }
 
 enum ProjectLinks {
-    static let repo = URL(string: "https://github.com/SorcRR/MacRazer")!
+    /// MacRazer MX's own repository, so the source link, issues and release URLs all lead to
+    /// the fork and never to upstream's tracker or releases. The original author's site, tip
+    /// jar and profile below stay as they are: they credit the work the fork is built on.
+    static let repo = URL(string: "https://github.com/cortinadev/MacRazer-MX")!
     /// The homepage, served by Cloudflare from the private Worker repository. GitHub Pages still
     /// serves docs/, which only redirects the old sorcrr.github.io/MacRazer/ address here, so
     /// older builds' links keep working.
@@ -61,22 +72,25 @@ enum ProjectLinks {
     static let privacy = URL(string: "https://macrazer.com/#privacy")!
 
     static let issues = repo.appendingPathComponent("issues")
-    /// Where a report goes when Send can't: offline, over the daily cap, or refused.
-    static let contactEmail = "contact@macrazer.com"
-    /// The longest email link offered. Mail apps differ in how much of a link they take, and
-    /// some open nothing past a few thousand characters. Measured on the link itself, after
+    /// Where a report goes when Send can't: offline, over the daily cap, or refused. Upstream
+    /// gives its maintainer's email address here. MacRazer MX has no mailbox, and that address
+    /// must not collect reports about builds its owner never made, so the fork points to its
+    /// own GitHub issues instead. Written as the failure message shows it, "github.com/…/issues",
+    /// and the message links it.
+    static let contact = issues.host! + issues.path
+    /// The longest new-issue link offered: GitHub and browsers cut long ones off, the way
+    /// `DeviceReportOutput.maxIssueURLLength` says. Measured on the link itself, after
     /// percent-encoding, which can triple a report full of quotes, braces and line breaks.
-    static let maxMailLink = 6000
+    static let maxContactLink = 6000
 
-    /// A new email to `contactEmail`, started with `subject` and `body`. A body too long for
-    /// `maxLength` is cut, whole characters at a time, and says so.
-    static func mail(subject: String, body: String = "", maxLength: Int = maxMailLink) -> URL {
+    /// A new issue on the fork's tracker, started with `title` and `body`. A body too long for
+    /// `maxLength` is cut, whole characters at a time, and says so. GitHub opens it as a draft:
+    /// nothing is posted until the person submits it.
+    static func newIssue(title: String, body: String = "", maxLength: Int = maxContactLink) -> URL {
         func link(_ body: String) -> URL {
-            var components = URLComponents()
-            components.scheme = "mailto"
-            components.path = contactEmail
-            components.queryItems = [URLQueryItem(name: "subject", value: subject)]
-                + (body.isEmpty ? [] : [URLQueryItem(name: "body", value: body)])
+            var components = URLComponents(url: issues.appendingPathComponent("new"), resolvingAgainstBaseURL: false)!
+            components.setEncodedQuery([URLQueryItem(name: "title", value: title)]
+                + (body.isEmpty ? [] : [URLQueryItem(name: "body", value: body)]))
             return components.url!
         }
         let whole = link(body)
@@ -118,8 +132,11 @@ enum ProjectLinks {
     ///
     /// `releases/latest` filtered drafts and prereleases on GitHub's side. The list does not,
     /// so that rule now lives in `ReleaseSpan` where it can be tested.
+    ///
+    /// The fork's, like `repo`. Unused while `AppInfo.updatesEnabled` is off, but never
+    /// upstream's: a check that found upstream's releases would offer to install them over this.
     static let releasesAPI =
-        URL(string: "https://api.github.com/repos/SorcRR/MacRazer/releases?per_page=20")!
+        URL(string: "https://api.github.com/repos/cortinadev/MacRazer-MX/releases?per_page=20")!
 
     // Upstream, credited in the About window and NOTICE.md.
     static let openRazer = URL(string: "https://github.com/openrazer/openrazer")!
@@ -132,18 +149,24 @@ enum ProjectLinks {
 /// off everything that would talk to it, so a build from someone else's checkout never
 /// sends anything to the maintainer's Worker, or anywhere.
 ///
-/// `Scripts/build-app.sh` writes the address into the bundle's Info.plist from DOMAIN in the
-/// maintainer's private settings file (see that repository's README). It is never in the repository.
+/// Upstream's `Scripts/build-app.sh` writes the address into the bundle's Info.plist from
+/// DOMAIN in its maintainer's private settings file. MacRazer MX's doesn't, and `base` below is
+/// nil whatever the bundle says: this fork has no Worker.
 enum WorkerEndpoint {
     static let infoKey = "MacRazerWorkerURL"
     /// For pointing a development build at `wrangler dev`: `MACRAZER_WORKER_URL=http://127.0.0.1:8787`.
     /// Only a `swift run` build reads it. A packaged app ignores it, so nothing in its launch
     /// environment can send reports, reply addresses included, somewhere else.
+    /// In MacRazer MX no build reads it, or `infoKey`, any more (see `base`); only the live
+    /// Worker test in DeviceReportSenderTests still does.
     static let environmentKey = "MACRAZER_WORKER_URL"
 
-    static let base: URL? = resolve(environment: ProcessInfo.processInfo.environment[environmentKey],
-                                    bundled: Bundle.main.object(forInfoDictionaryKey: infoKey) as? String,
-                                    isPackaged: AppInfo.version != nil)
+    /// Always nil in MacRazer MX. The Worker is upstream's private server, and a fork must never
+    /// send it device reports, issue reports, crash reports, counts or usage stats, whatever an
+    /// Info.plist key or a launch environment says. With no base, every feature that would talk
+    /// to it hides itself and switches off, as in any build from a clone. `resolve` is kept,
+    /// unused here, so its tests and upstream merges stay simple.
+    static let base: URL? = nil
 
     static func resolve(environment: String?, bundled: String?, isPackaged: Bool) -> URL? {
         isPackaged ? parse(bundled) : parse(environment) ?? parse(bundled)

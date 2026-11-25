@@ -5,11 +5,14 @@ import Foundation
 
 /// Where the per-device stores live — shared between `VersionedFileStore` and the
 /// key-migration helper so the two can't drift apart.
+///
+/// "MacRazer MX", not upstream's "MacRazer": the fork can be installed next to MacRazer, and
+/// two apps writing the same battery histories would each overwrite what the other learned.
 enum StoreDirectory {
     static var `default`: URL {
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("MacRazer", isDirectory: true)
+            .appendingPathComponent("MacRazer MX", isDirectory: true)
     }
 }
 

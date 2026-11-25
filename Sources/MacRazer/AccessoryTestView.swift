@@ -135,8 +135,8 @@ struct AccessoryTestView: View {
             switch model.sendState {
             case .sending: reportRunning("Sending…")
             case .failed(let outcome):
-                reportSendFailure(DeviceTestView.sendFailure(outcome), mail: ProjectLinks.mail(
-                    subject: "MacRazer device report" + (report.map { ": \($0.device.name)" } ?? "")))
+                reportSendFailure(DeviceTestView.sendFailure(outcome), link: ProjectLinks.newIssue(
+                    title: "MacRazer device report" + (report.map { ": \($0.device.name)" } ?? "")))
             case .idle, .sent: EmptyView()
             }
         }
