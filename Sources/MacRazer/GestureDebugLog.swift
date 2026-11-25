@@ -10,7 +10,8 @@ import Foundation
 /// then relaunch. Lines go to `~/Library/Logs/MacRazer MX/gesture.log`. It exists because
 /// nothing outside the app can watch what its event tap receives: another process needs its
 /// own Input Monitoring grant to see the same events. It records button and F20 timing and
-/// pointer deltas only, never what is typed.
+/// pointer deltas only, never what is typed (see `GestureDebugHIDWatch` for how the raw HID
+/// watch keeps to that).
 enum GestureDebugLog {
     static let defaultsKey = "gestureDebugLog"
 
@@ -60,6 +61,15 @@ enum GestureDebugHIDWatch {
             let usage = IOHIDElementGetUsage(element)
             // Generic Desktop is the pointer and wheel, at the polling rate: not wanted.
             guard page != kHIDPage_GenericDesktop else { return }
+            // Never which key: the match is by vendor, so a keyboard of the same make is
+            // watched too, and what is typed on it must not reach a log. F13 to F20 are the
+            // exception, being what a remapped mouse button types.
+            if page == kHIDPage_KeyboardOrKeypad, !(0x68...0x6F).contains(usage) {
+                GestureDebugLog.log("HID keyboard key (not recorded)")
+                return
+            }
+            // The wheel's sideways axis reports with every packet and says nothing.
+            if page == kHIDPage_Consumer, usage == kHIDUsage_Csmr_ACPan { return }
             GestureDebugLog.log(String(format: "HID page=%02x usage=%02x value=%ld len=%ld",
                                        page, usage, IOHIDValueGetIntegerValue(value), IOHIDValueGetLength(value)))
         }, nil)
