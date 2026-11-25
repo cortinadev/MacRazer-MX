@@ -123,8 +123,9 @@ final class ButtonRemapperGestureTests: XCTestCase {
 
     // MARK: Ending a hold
 
-    /// Pausing mid-hold ends it: the release then goes through like any paused press, and
-    /// fires nothing.
+    /// Pausing mid-hold ends it: the release fires nothing, and is swallowed as its press was,
+    /// so no app sees a release of a press it never saw (Back's release can be what
+    /// navigates).
     func testPausingEndsTheHold() {
         let emitted = Emitted()
         let r = remapper(emitted)
@@ -132,8 +133,55 @@ final class ButtonRemapperGestureTests: XCTestCase {
         XCTAssertNotNil(r.gestureHold)
         r.remappingPaused = true
         XCTAssertNil(r.gestureHold)
+        XCTAssertFalse(send(r, .otherMouseUp), "the release of a swallowed press")
+        XCTAssertEqual(emitted.actions, [])
+        XCTAssertTrue(send(r, .otherMouseDown), "the next press is paused, and goes through")
+        XCTAssertTrue(send(r, .otherMouseUp), "and so does its release")
+    }
+
+    /// The reverse, and the likelier: a press goes through while paused, and asks for the
+    /// check that unpauses (`onPressWhilePaused`), which can land while the button is still
+    /// held, as it is through a swipe. Its release must go through too: swallowed, the app
+    /// that saw the press would keep the button held down. And nothing fires for it.
+    func testAPressLetThroughWhilePausedHasItsReleaseLetThroughAfterUnpausing() {
+        let emitted = Emitted()
+        let r = remapper(emitted)
+        r.remappingPaused = true
+        XCTAssertTrue(send(r, .otherMouseDown))
+        XCTAssertEqual(emitted.pausedPresses, 1)
+        r.remappingPaused = false
+        XCTAssertNil(r.gestureHold, "no hold for a press that went through")
+        XCTAssertTrue(send(r, .otherMouseDragged, dy: -100), "its drags are the app's")
+        XCTAssertTrue(send(r, .otherMouseUp), "the release of a press the app saw")
+        XCTAssertEqual(emitted.actions, [], "no swipe, no click")
+
+        XCTAssertFalse(send(r, .otherMouseDown), "the next press is the gesture's again")
+        XCTAssertFalse(send(r, .otherMouseUp))
+        XCTAssertEqual(emitted.actions, [bindings.click])
+    }
+
+    /// A release whose press the tap never saw (pressed before the tap was installed, or while
+    /// it was off) was preceded by a press the app saw, so it goes through, and fires nothing.
+    func testAReleaseWithoutASeenPressGoesThrough() {
+        let emitted = Emitted()
+        let r = remapper(emitted)
         XCTAssertTrue(send(r, .otherMouseUp))
         XCTAssertEqual(emitted.actions, [])
+    }
+
+    /// A keystroke button's release follows its press the same way: a remap to None between
+    /// them still swallows the release of the swallowed press, and the press fired once.
+    func testAKeystrokeButtonsReleaseFollowsItsPress() {
+        let emitted = Emitted()
+        let r = remapper(emitted)
+        let copy = RemapAction.keystroke(keyCode: 8, modifiers: CGEventFlags.maskCommand.rawValue, name: "Copy")
+        r.setAction(copy, for: 4)
+        XCTAssertFalse(send(r, .otherMouseDown, button: 4))
+        r.setAction(.passthrough, for: 4)
+        XCTAssertFalse(send(r, .otherMouseUp, button: 4), "its press was swallowed")
+        XCTAssertEqual(emitted.actions, [copy])
+        XCTAssertTrue(send(r, .otherMouseDown, button: 4), "None now")
+        XCTAssertTrue(send(r, .otherMouseUp, button: 4))
     }
 
     /// A new press ends a hold, so one whose release went missing can't keep swallowing drags.
@@ -163,6 +211,7 @@ final class ButtonRemapperGestureTests: XCTestCase {
     }
 
     /// Changing the button's mapping ends its hold: the hold was started with the old one.
+    /// The release still follows its press, which was swallowed.
     func testChangingTheMappingEndsTheHold() {
         let emitted = Emitted()
         let r = remapper(emitted)
@@ -170,8 +219,10 @@ final class ButtonRemapperGestureTests: XCTestCase {
         XCTAssertNotNil(r.gestureHold)
         r.setAction(.passthrough, for: back)
         XCTAssertNil(r.gestureHold)
-        XCTAssertTrue(send(r, .otherMouseUp), "None now: the release goes through")
+        XCTAssertFalse(send(r, .otherMouseUp), "None now, but its press was swallowed: so is the release")
         XCTAssertEqual(emitted.actions, [])
+        XCTAssertTrue(send(r, .otherMouseDown), "the next press is None's")
+        XCTAssertTrue(send(r, .otherMouseUp))
 
         r.setMappings([back: .gesture(bindings)])
         send(r, .otherMouseDown)
@@ -294,6 +345,37 @@ final class ButtonRemapperGestureTests: XCTestCase {
         XCTAssertEqual(second.mappings, [back: .gesture(custom), 4: .doubleClick])
     }
 
+    /// When a mouse first connects its data is saved under its product id, and moves to its
+    /// serial once that's read (`MouseController.migratePerDeviceData`). A gesture goes with
+    /// it whole, in the mouse buttons' table, as the DPI button's action, and in a profile.
+    func testAGestureMovesFromThePidKeyToTheSerialKey() throws {
+        let oldKey = "test-pid-\(UUID().uuidString)", newKey = "test-serial-\(UUID().uuidString)"
+        let standard = UserDefaults.standard
+        let keys = ["buttonMappings-", "dpiCycleSoftwareAction-"].flatMap { ["\($0)\(oldKey)", "\($0)\(newKey)"] }
+        defer {
+            keys.forEach(standard.removeObject(forKey:))
+            ProfileStore.removeStorage(forDevice: oldKey)
+            ProfileStore.removeStorage(forDevice: newKey)
+        }
+        let table: [Int: RemapAction] = [back: .gesture(bindings), 4: .doubleClick]
+        standard.set(try JSONEncoder().encode(table), forKey: "buttonMappings-\(oldKey)")
+        standard.set(try JSONEncoder().encode(RemapAction.gesture(bindings)), forKey: "dpiCycleSoftwareAction-\(oldKey)")
+        let profile = MouseProfile(name: "Swipes", dpi: 1600, pollRate: 1000, brightness: 50, effect: "",
+                                   color: RGB(r: 0, g: 0, b: 0), buttonMappings: table)
+        ProfileStore.save([profile], forDevice: oldKey)
+
+        MouseController.migratePerDeviceData(from: oldKey, to: newKey)
+
+        let r = ButtonRemapper(defaults: standard)
+        r.setActiveDevice(newKey, deviceID: 0x00DC)
+        XCTAssertEqual(r.mappings, table)
+        XCTAssertEqual(r.gestureBindings(for: ButtonRemapper.dpiButton), bindings)
+        XCTAssertEqual(ProfileStore.profiles(forDevice: newKey).map(\.buttonMappings), [table])
+        XCTAssertNil(standard.object(forKey: "buttonMappings-\(oldKey)"))
+        XCTAssertNil(standard.object(forKey: "dpiCycleSoftwareAction-\(oldKey)"))
+        XCTAssertEqual(ProfileStore.profiles(forDevice: oldKey), [])
+    }
+
     // MARK: The tap's events
 
     /// Drags come at the mouse's polling rate: the tap asks for them only while a gesture
@@ -309,6 +391,30 @@ final class ButtonRemapperGestureTests: XCTestCase {
                           "a different mask, so adding a gesture reinstalls the tap")
         XCTAssertTrue(ButtonRemapper.includesKeyboardEvents(ButtonRemapper.eventMask(keyboard: true, gestures: true)))
         XCTAssertFalse(ButtonRemapper.includesKeyboardEvents(ButtonRemapper.eventMask(keyboard: false, gestures: true)))
+    }
+
+    /// The drags are asked for while any gesture needs them and no longer: the mask the tap
+    /// should have follows every way the table changes, one button, a whole profile, and a
+    /// switch to another mouse with its own table.
+    func testTheWantedMaskFollowsTheTableEveryWayItChanges() {
+        let drag = CGEventMask(1) << CGEventType.otherMouseDragged.rawValue
+        let shared = defaults()
+        let r = ButtonRemapper(defaults: shared)
+        r.setActiveDevice("WITH-GESTURE")
+        XCTAssertEqual(r.wantedEventMask & drag, 0)
+        r.makeGesture(back)
+        XCTAssertNotEqual(r.wantedEventMask & drag, 0, "one button made a gesture")
+        r.setAction(.passthrough, for: back)
+        XCTAssertEqual(r.wantedEventMask & drag, 0, "and put back")
+        r.setMappings([4: .gesture(bindings)])
+        XCTAssertNotEqual(r.wantedEventMask & drag, 0, "a profile with a gesture")
+
+        r.setActiveDevice("WITHOUT-GESTURE")
+        XCTAssertEqual(r.wantedEventMask & drag, 0, "another mouse, with no gesture saved")
+        r.setActiveDevice("WITH-GESTURE")
+        XCTAssertNotEqual(r.wantedEventMask & drag, 0, "back to the one with a gesture")
+        r.setActiveDevice(nil)
+        XCTAssertEqual(r.wantedEventMask & drag, 0, "no mouse, no table")
     }
 
     /// When macOS refuses the keyboard tap, the fallback drops only the keys. Gestures keep

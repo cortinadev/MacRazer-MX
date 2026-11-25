@@ -158,6 +158,11 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// too; a fresh press sets it again either way (`handleDpiBridge`). Cleared when no tap
     /// with the keys is left to see that key-up.
     private var bridgeKeyIsDown = false
+    /// Mouse buttons whose press the tap swallowed and whose release hasn't come yet: the
+    /// release is swallowed exactly when its press was (`handle`), as F20's is
+    /// (`bridgeKeyIsDown`). Kept across a reinstall of the tap; a fresh press of the button
+    /// starts over either way, and none is left once no tap is coming back.
+    private var swallowedPresses: Set<Int> = []
     private var dpiBridgeReadRequested = false
     private var dpiBridgeRestoreAttempted = false
     private var dpiObservers = Set<AnyCancellable>()
@@ -207,7 +212,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// its mappings must not fire: the tap can't tell which device sent a click, so they'd
     /// keep remapping matching buttons on every other pointing device. Published so the
     /// remap UI can say why nothing is firing (button detection still works while paused).
-    /// Pausing ends a gesture hold: its release then passes through like any paused press.
+    /// Pausing ends a gesture hold: its release fires nothing, and is still swallowed as its
+    /// press was.
     @Published var remappingPaused = false {
         didSet { if remappingPaused { gestureHold = nil } }
     }
@@ -303,8 +309,9 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             installTapIfNeeded()
         } else {
             removeTap()
-            // No tap is coming back to see this press's release.
+            // No tap is coming back to see these presses' releases.
             bridgeKeyIsDown = false
+            swallowedPresses = []
         }
         refreshCompetingTaps()
     }
@@ -312,8 +319,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// Tears down the event tap and its run-loop source — called when Accessibility is revoked
     /// while the app is running, so a stale tap isn't left registered indefinitely, and before
     /// a tap with another mask is installed. Ends any hold, the DPI button's too: its events
-    /// may go by unseen in between. `bridgeKeyIsDown` stays, so a swallowed F20's key-up that
-    /// reaches the new tap is still swallowed.
+    /// may go by unseen in between. `bridgeKeyIsDown` and `swallowedPresses` stay, so the
+    /// release of a swallowed press that reaches the new tap is still swallowed.
     private func removeTap() {
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
@@ -667,22 +674,29 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         guard type == .otherMouseDown || type == .otherMouseUp else {
             return Unmanaged.passUnretained(event)
         }
+        // A release goes the way its press went, whatever changed in between (paused or
+        // unpaused, remapped, the hold ended): swallowed after a swallowed press, ending that
+        // button's hold (its click, if no swipe fired), and through otherwise. An app must
+        // never see a press without its release, which leaves the button held down there.
+        if type == .otherMouseUp {
+            guard swallowedPresses.remove(button) != nil else { return Unmanaged.passUnretained(event) }
+            endGesture(trigger: button)
+            return nil
+        }
         // A press while a gesture is held ends the hold, so one whose release went missing
         // can't linger and swallow the next drags.
-        if type == .otherMouseDown { gestureHold = nil }
+        gestureHold = nil
+        swallowedPresses.remove(button)
 
         if let action = mappings[button], action != .passthrough {
             guard remappingPaused else {
                 if case .gesture(let bindings) = action {
-                    if type == .otherMouseDown {
-                        beginGesture(bindings, trigger: button)
-                    } else {
-                        endGesture(trigger: button)
-                    }
-                } else if type == .otherMouseDown {
+                    beginGesture(bindings, trigger: button)
+                } else {
                     apply(action)
                 }
-                return nil // suppress the original button (both down and up)
+                swallowedPresses.insert(button)
+                return nil // suppress the original button (its release follows, above)
             }
             // This press still goes through unchanged: the tap can't tell which device sent
             // it, so it may not be our mouse at all. The check brings the mapping back for the
