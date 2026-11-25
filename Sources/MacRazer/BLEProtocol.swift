@@ -45,9 +45,10 @@ enum BLEProtocol {
         static func brightnessSet(led: UInt8) -> Key { Key(0x10, 0x05, 0x01, led) }
         static let staticColor = Key(0x10, 0x04, 0x00, 0x00)
         // The DPI button's assignment lives in the mouse's function table, entry 0x60
-        // (`RazerDevices.supportsDpiButtonBinding`). Reads target the active bank; writes
-        // use the projection bank. BluetoothDevice reads the entry before every write and
-        // again after it, before the UI reports success.
+        // (`RazerDevices.supportsDpiButtonBinding`). Reads target the slot in use (0); writes
+        // go to profile slot 1, as the payload's first byte says too. BluetoothDevice writes
+        // only while the mouse says slot 1 is the one in use, and reads the entry before
+        // every write and again after it, before the UI reports success.
         static let dpiButtonGet = Key(0x08, 0x84, 0x00, 0x60)
         static let dpiButtonSet = Key(0x08, 0x04, 0x01, 0x60)
         /// Any entry of that function table, by its id (the DPI Cycle entry is 0x60).
@@ -193,8 +194,8 @@ enum BLEProtocol {
     /// and what a read of the entry must name as its factory block when it carries one.
     static let dpiCycleBlock: [UInt8] = [0x06, 0x01, 0x06, 0, 0, 0, 0]
 
-    /// Why a read of the DPI button's entry can't be used. The write path reads the entry
-    /// first and stops on these, so they always mean nothing was written.
+    /// Why a read of the DPI button's entry, or of the profile in use, can't be used. The write
+    /// path reads both first and stops on these, so they always mean nothing was written.
     enum DPIButtonEntryError: Error, Equatable {
         /// The reply isn't laid out as a read of entry 0x60, or what the button does now isn't
         /// a `DPIButtonBinding` (a macro, a profile switch, nothing at all).
@@ -202,6 +203,10 @@ enum BLEProtocol {
         /// The mouse names a factory function other than DPI Cycle for the entry, so on this
         /// mouse it isn't the DPI button.
         case notTheDpiButton
+        /// The mouse says it's using onboard profile `slot`, not profile 1. The write goes to
+        /// profile 1's entry (`Key.dpiButtonSet`) while the reads around it see the profile in
+        /// use, so it would change an entry nothing read, and never read back.
+        case otherProfileInUse(UInt8)
     }
 
     /// Why a write of the DPI button's entry failed after the read before it went through.

@@ -1431,9 +1431,9 @@ final class MouseController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// Writes the DPI button's assignment. `BluetoothDevice.setDpiCycleBinding` reads the
-    /// entry first and writes nothing unless it parses, then reads it back, so `completion`
-    /// gets true only once the mouse holds `binding`.
+    /// Writes the DPI button's assignment. `BluetoothDevice.setDpiCycleBinding` writes nothing
+    /// while the mouse says it's on a profile other than 1, or unless the entry it reads first
+    /// parses, then reads it back, so `completion` gets true only once the mouse holds `binding`.
     func setDpiCycleButtonBinding(_ binding: BLEProtocol.DPIButtonBinding,
                                   completion: @escaping @Sendable (Bool) -> Void = { _ in }) {
         userCommand { [weak self] in
@@ -1479,6 +1479,9 @@ final class MouseController: ObservableObject, @unchecked Sendable {
             return "MacRazer couldn't confirm this is the mouse's DPI button, so it won't change it."
         case BLEProtocol.DPIButtonEntryError.unrecognized:
             return "MacRazer doesn't recognize what the mouse has saved for this button, so it won't change it."
+        case BLEProtocol.DPIButtonEntryError.otherProfileInUse(let slot):
+            return "The mouse is on its onboard profile \(slot), and MacRazer can only change this button "
+                + "on profile 1, so it won't change it. Switch the mouse to profile 1 and try again."
         case HIDDevice.HIDError.timeout, HIDDevice.HIDError.notFound:
             return "The mouse stopped answering. Check that it's on and try again."
         case HIDDevice.HIDError.notSupported, HIDDevice.HIDError.commandFailed:

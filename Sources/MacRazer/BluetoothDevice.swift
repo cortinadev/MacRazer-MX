@@ -201,13 +201,21 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     /// reserved F20 keyboard usage, which ButtonRemapper turns into the action while this app
     /// is running.
     func setDpiCycleBinding(_ binding: BLEProtocol.DPIButtonBinding) throws {
-        try Self.writeDpiCycleBinding(binding, read: { try readDpiCycleEntry() }, write: { payload in
+        try Self.writeDpiCycleBinding(binding, activeSlot: { readActiveSlot() }, read: { try readDpiCycleEntry() },
+                                      write: { payload in
             _ = try exchange(BLEProtocol.Request(key: .dpiButtonSet, payload: payload, reply: .ack))
         })
     }
 
-    /// The DPI button's write, apart from the device so tests can drive it: `read` returns a
-    /// read of entry 0x60, `write` sends the set payload.
+    /// The DPI button's write, apart from the device so tests can drive it: `activeSlot`
+    /// returns the profile slot in use (`readActiveSlot`), `read` a read of entry 0x60,
+    /// `write` sends the set payload.
+    ///
+    /// The write goes to profile 1 (`BLEProtocol.Key.dpiButtonSet`), and the reads before and
+    /// after it read the profile in use. So nothing is sent while the mouse says another
+    /// profile is in use (`DPIButtonEntryError.otherProfileInUse`): the reads would check one
+    /// profile's entry and the write change another's, which nothing read and the page never
+    /// shows. A mouse that doesn't say is taken to be on profile 1, as before.
     ///
     /// The entry is read first, and nothing is written unless that read succeeds and parses
     /// (`BLEProtocol.parseDpiButtonBinding`): the binding is enabled on a model where 0x60 is
@@ -216,8 +224,12 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     /// errors are thrown unchanged, so they always mean nothing was written. The write itself
     /// is sent once. Then the entry is read again, and anything but `binding` throws
     /// `DPIButtonWriteError.notReadBack`; no second write follows a mismatch.
-    static func writeDpiCycleBinding(_ binding: BLEProtocol.DPIButtonBinding,
+    static func writeDpiCycleBinding(_ binding: BLEProtocol.DPIButtonBinding, activeSlot: () -> UInt8,
                                      read: () throws -> Data, write: ([UInt8]) throws -> Void) throws {
+        let slot = activeSlot()
+        guard slot == BLEProtocol.Key.dpiButtonSet.bytes[2] else {
+            throw BLEProtocol.DPIButtonEntryError.otherProfileInUse(slot)
+        }
         _ = try BLEProtocol.parseDpiButtonBinding(read())
         do {
             try write(Array(BLEProtocol.dpiButtonPayload(for: binding)))
