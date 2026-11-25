@@ -1,4 +1,4 @@
-# MacRazer: Documentation
+# MacRazer MX: Documentation
 
 A native macOS menu bar app to control Razer mice: battery, DPI, polling rate, RGB lighting,
 brightness, and software button remapping. Razer's Synapse does not support macOS, so this
@@ -7,6 +7,25 @@ mouse; others have been verified from user reports. By design it detects and tri
 any Razer mouse in the same protocol family. The registry (`RazerDevices.known`) lists every
 product id it knows, and README's table says which of them anyone has actually run the probes
 against, and how far.
+
+**This is the documentation of MacRazer MX**, a fork of SorcRR's
+[MacRazer](https://github.com/SorcRR/MacRazer) (fork: `github.com/cortinadev/MacRazer-MX`, branch
+`feature/mx-gestures-dpi` at the time of writing). It was written for upstream's app, and what
+the fork changes is described where it applies, in §6.3 (gesture mode, the DPI button bridge),
+§6.7 (updates are off), §7 (a different bundle ID, so permissions are separate) and the file map
+in §10. The short version of the fork's differences:
+
+- **Identity.** App and bundle "MacRazer MX", bundle ID `com.cortinadev.macrazer-mx`,
+  Application Support folder "MacRazer MX", so it installs next to upstream's MacRazer. The two
+  must not *run* together: both talk to the mouse and install event taps. The SwiftPM target
+  and the executable inside the bundle are still `MacRazer`, to keep upstream merges simple.
+- **No network features.** `AppInfo.updatesEnabled` is `false` and `WorkerEndpoint.base` is
+  always `nil`, so there are no update checks, usage counts, crash, issue or device reports
+  (§6.4 to §6.7 and §6.9 describe upstream's behaviour, which is dormant here). Where upstream
+  gives an email address, `ProjectLinks.contact` and `ProjectLinks.newIssue(title:body:)` point
+  to the fork's GitHub issues.
+- **Additions.** Gesture mode and a wider DPI button remap (§6.3).
+- Nothing in the fork's additions has been run on real hardware: only unit tests exist.
 
 This document explains how the app is built and how every feature works, so a future Claude
 session or a human can pick it up cold. See also:
@@ -50,8 +69,8 @@ swift run MacRazer
 
 # Build a standalone .app:
 ./Scripts/setup-signing.sh # one-time: stable self-signed identity (see §7)
-./Scripts/build-app.sh # to "MacRazer.app"
-open "MacRazer.app"
+./Scripts/build-app.sh # to "MacRazer MX.app" (the space means every use is quoted)
+open "MacRazer MX.app"
 ```
 
 **Permissions** (see §7): the app needs **Input Monitoring** (to send/receive HID reports)
@@ -216,7 +235,7 @@ the popover is open, `setPopoverVisible(true)` polls DPI/poll every 2 s so on-mo
 (e.g. the DPI-cycle button) reflect live.
 
 ### `BatteryHistory.swift`, time-until-empty estimate
-- Logs `(timestamp, %)` samples to `~/Library/Application Support/MacRazer/battery-history.json`.
+- Logs `(timestamp, %)` samples to `~/Library/Application Support/MacRazer MX/battery-history.json`.
 - Computes a discharge rate by **linear least-squares fit** over samples (needs >=5 samples,
  >=30 min span, >=3% measured drop before it's trusted, otherwise the coarse reading is
  noise and the estimate drifts).
@@ -249,7 +268,8 @@ the popover is open, `setPopoverVisible(true)` polls DPI/poll every 2 s so on-mo
  `LowBatteryAlertPolicy` is the pure part. A failed charging read counts as unknown, not as
  on battery, so a docked mouse that refuses commands around sleep doesn't get a false alert.
 - **Storage**, `Persistence.swift`: battery history, charge cycles and the curve are each a
- versioned JSON file in `~/Library/Application Support/MacRazer/`, written atomically and
+ versioned JSON file in `~/Library/Application Support/MacRazer MX/` (`StoreDirectory.default`;
+ upstream uses `MacRazer`), written atomically and
  throttled. A format change bumps the version and the data is re-learned instead of failing
  to decode.
 
@@ -414,19 +434,157 @@ long content scrolls without resizing the popover):
 **Software** remapping via a `CGEvent` tap (the onboard-remap protocol isn't in OpenRazer and
 Razer's EULA forbids reverse-engineering it, see CHANGELOG / chat). The tap watches
 `otherMouseDown/Up`; for a mapped button it **suppresses the original event and posts the
-mapped action** (events the app itself posts are tagged and skipped to avoid loops). Only the
-side buttons (Back/Forward = buttons 4/5) emit OS-level events and are remappable; DPI/profile
-buttons are handled onboard and never reach macOS.
+mapped action** (events the app itself posts are tagged with `ButtonRemapper.magic` and skipped
+to avoid loops). Only buttons macOS reports as "other" mouse buttons are remappable: the side
+buttons (Back/Forward = buttons 4/5), the wheel click and any further extra buttons. Left and
+right clicks are never tapped. A button the mouse handles onboard and never reports is out of
+reach, with one exception: the DPI button on a mouse with `supportsDpiButtonBinding` can be made
+to type F20, which the tap does see (§6.3.3). Profile and DPI-stage buttons that change
+something inside the mouse still never reach macOS.
 
-- Actions: passthrough, **keystroke** (preset shortcuts or a **custom recorder** that
- captures any combo), **mouse** (middle/double click), **media** (play/next/prev/volume/mute).
-- Mappings persist to UserDefaults. Needs **Accessibility** permission (banner + Open
- Settings / Re-check in the UI).
+- Actions (`RemapAction`): `.passthrough` (None), `.keystroke` (preset shortcuts or a **custom
+ recorder** that captures any combo), `.mouseButton` (middle click and others), `.doubleClick`,
+ `.mediaKey` (play/next/prev/volume/mute) and `.gesture(GestureBindings)` (§6.3.2).
+- Mappings persist to UserDefaults per device (`buttonMappings-<device key>`). Needs
+ **Accessibility** permission (banner + Open Settings / Re-check in the UI).
 - Available both inline (popover buttons page) and as a standalone window
  (`RemapWindowController.swift`, opened from the right-click menu).
 - Another app's event tap can take a side button's clicks before MacRazer's sees them. Until a
  side button gets through, the page names any such app that's running
  (`ButtonRemapper.competingTapApps`, from `CGGetEventTapList`, Apple's own processes left out).
+- While the mouse is offline (`remappingPaused`) mappings don't fire, since the tap can't tell
+ which device sent a click.
+- **Tap mask** (`ButtonRemapper.eventMask(keyboard:gestures:dpiGesture:)`, wanted value in
+ `wantedEventMask`): always `otherMouseDown/Up`; `otherMouseDragged` only while some mapped
+ button is a gesture; key down/up only while the DPI button has a saved software action; and
+ `mouseMoved` only with both the keys and a DPI-button gesture. Drags and moves come at the
+ mouse's polling rate, and a tap that doesn't ask for them never sees them. A change in what
+ is wanted reinstalls the tap (`installTapIfNeeded`). If macOS refuses a tap with keys,
+ `installTap` falls back to the mask without `bridgeEventsMask` and remembers the refusal
+ (`keyboardTapRefused`) until a Re-check or relaunch.
+
+### 6.3.2 Gesture mode, `GestureRecognizer.swift` + `ButtonRemapper.swift`
+
+A mouse button can be set to **Gesture…** in `RemapView` (the same menu, `RemapActionMenu`, has
+it for every button; the DPI button's has it too, §6.3.3). Held and moved, the button fires one
+action per direction; pressed and released without a swipe, it fires its Click action.
+
+- **Data model.** `RemapAction.gesture(GestureBindings)` is saved with the other actions, so a
+ gesture needs no new storage key. `GestureBindings` holds five ordinary `RemapAction`s:
+ `click`, `up`, `down`, `left`, `right` (`GestureSlot` names them for the editor, and
+ `action(for: GestureDirection)` picks by direction). A gesture inside a gesture is never
+ offered, and `apply(_:)` ignores one that turns up in saved data. `GestureBindings.defaults(click:)`
+ uses the presets `missionControl`, `appExpose`, `spaceLeft` and `spaceRight`;
+ `defaults(for: button)` takes `originalClick(for:)` as the click (Back re-posts Back, the
+ wheel click re-posts a middle click, and `.passthrough` for the DPI button and the primary
+ buttons). `makeGesture(_:)` applies the defaults to a button that isn't a gesture yet and
+ keeps the choices of one that is. `setGestureAction(_:for:of:)` edits one slot.
+- **The recogniser** (`GestureRecognizer`, a pure struct) sums the net movement since the hold
+ began (`dx`, `dy`, CGEvent deltas with y growing downward). `move(dx:dy:)` returns a
+ `GestureDirection` the first time the larger axis reaches `GestureRecognizer.threshold` (50
+ points), and nil after that, so one swipe fires per hold. An exact diagonal goes horizontal.
+ Net rather than travelled distance: going right and back is still a click. `end()` returns
+ whether the hold was a click and resets the value.
+- **Event pipeline** (`ButtonRemapper.handle(type:event:)`). `otherMouseDown` of a gesture
+ button calls `beginGesture(_:trigger:)`, which stores a `GestureHold` (trigger, bindings,
+ recogniser) in `gestureHold`; one hold at a time. `otherMouseDragged` goes first in `handle`
+ and returns at once when no hold exists; otherwise `handleGestureDrag` feeds the deltas to
+ `moveGesture(dx:dy:trigger:)`, which calls `apply(_:)` with the direction's action on the
+ swipe. `otherMouseUp` calls `endGesture(trigger:)`, which fires the click action if no swipe
+ fired. The press, the drags of the held button and the release are swallowed (the tap returns
+ nil); drags of another button go through. The pointer itself is not frozen, so the cursor
+ moves while the swipe happens.
+- **What ends or cancels a hold without a click**: a new `otherMouseDown` of any button,
+ pausing (`remappingPaused`), changing the mappings (`setAction` for that button, `setMappings` for all), switching
+ device (`setActiveDevice`), and the tap being disabled by macOS
+ (`tapDisabledByTimeout` / `tapDisabledByUserInput`). While paused a press passes through, so
+ the mouse's own function remains.
+- **The system actions** are posted as the standard keyboard shortcuts (⌃↑ Mission Control,
+ ⌃↓ App Exposé, ⌃← and ⌃→ for Spaces) with the flags a real arrow key carries
+ (`postedFlags(keyCode:saved:)`). The user must have those shortcuts on in System Settings ›
+ Keyboard › Keyboard Shortcuts › Mission Control, otherwise the swipe does nothing. The
+ `appExpose` preset ("App Exposé  ⌃↓", key code 125) was added for this.
+- **A gesture's click re-posts the button** (`postMouseClick`, tagged so it passes the tap), so
+ it fires at release. A gesture button therefore can't be held to drag.
+- **UI.** `RemapView.gestureEditor` lists the five slots with an action menu each and a key
+ recorder; `RemapActionMenu`'s `onGesture` adds Gesture… to the menu. `swift run MacRazer
+ render-remap gesture out.png` renders the editor from preview data
+ (`ButtonRemapper.loadPreviewState` has a gesture on button 5).
+- **Tests.** `GestureRecognizerTests` (threshold, dominant axis, once per hold, net movement),
+ `ButtonRemapperGestureTests` (swallowing, pass-through while paused, the cancel rules, nested
+ gestures, defaults, persistence, the mask), driven through `handle(type:event:)` with
+ synthetic `CGEvent`s and the `actionEmitter` hook that records actions instead of posting them.
+
+### 6.3.3 The DPI button bridge, `ButtonRemapper.swift` + `BLEProtocol.swift` + `BluetoothDevice.swift`
+
+On a mouse with `RazerDevices.supportsDpiButtonBinding` (Basilisk V3 X HyperSpeed, and in the
+fork the Cobra HyperSpeed, both over Bluetooth, PIDs `0x00BA` and `0x00DC`) the DPI button's
+assignment is entry `0x60` of the mouse's onboard function table. The Buttons page shows a "DPI
+Button" section (`DpiCycleBindingSection`) only for such a mouse on Bluetooth. USB and the
+2.4 GHz dongle are not supported: the firmware handles the button onboard there and no USB write
+for it exists in the app.
+
+**Honest status.** On the Basilisk V3 X this is upstream's, tested behaviour. On the Cobra
+HyperSpeed it is enabled (see the comment on its entry in `RazerDevices.known`) but **entry 0x60
+has not been confirmed as the DPI button on a real Cobra**. The safety rules below exist because
+of that.
+
+- **Assignments** (`BLEProtocol.DPIButtonBinding`): `.dpiCycle` (factory, `dpiCycleBlock`),
+ mouse buttons by `buttonID` (`.leftClick` through `.scrollDown`), `.keyboardShortcut(hidUsage:
+ modifiers:)`, and `.softwareBridge`, which is `.keyboardShortcut(hidUsage: 0x6F, modifiers:
+ 0)`, the HID usage of F20. `dpiButtonPayload(for:)` builds the 10-byte write.
+- **Choosing how an action is carried out** (`ButtonRemapper.dpiButtonAssignment(for:)`): None
+ is DPI Cycle; a keystroke whose key `hidUsage(forMacKeyCode:)` knows, or a mouse button 1 to 5,
+ is written as the mouse's own function and works without the app; everything else (media key,
+ Double Click, gesture, an unknown key) is `.softwareBridge`, with the action saved as
+ `dpiCycleSoftwareAction` (UserDefaults key `dpiCycleSoftwareAction-<device key>`).
+ `configureDpiButton(_:controller:)` is the entry point from the menu; `configureDpiCycle(_:
+ softwareAction:controller:)` writes through `MouseController.setDpiCycleButtonBinding` and
+ only saves the software action, and marks `dpiBridgeBindingConfirmed`, once the write read
+ back. A software action is refused (nothing written) without Accessibility
+ (`remappingPermissionsGranted`). `makeDpiGesture(controller:)` is Gesture… for this button:
+ the defaults with None as the click (`originalClick(for: dpiButton)`), through F20.
+- **Event pipeline.** `handleDpiBridge(type:event:)` handles key events whose key code is 90
+ (F20). A key-down that arrives with the binding confirmed, the mouse connected and none of ⌘ ⌃
+ ⌥ ⇧ held is swallowed and either `apply`s the saved action or, for a gesture, starts a hold
+ with trigger `ButtonRemapper.dpiButton` (-1). Key repeats never start anything. Movement while
+ the DPI button is held arrives as `.mouseMoved` (`handleDpiGestureMove`, which does not
+ swallow it, since no app saw a button go down); the key-up ends the hold and fires the click if
+ no swipe fired. `bridgeKeyIsDown` guarantees a swallowed key-down's key-up is swallowed too,
+ and a key-down that was let through has its key-up let through. The F20 of a real keyboard
+ takes the same path while an action is set. Primary-button drags are never tapped, so a DPI
+ hold sees no movement while the left or right button is also down.
+- **Reading and restoring.** `observeDpiCycle(controller:)` (wired in `AppDelegate`) tracks the
+ connection. On connecting (Bluetooth, supported model) and after a wake it reads the entry
+ (`MouseController.refreshDpiCycleButtonBinding`, a read only). `confirmDpiBridge` marks the
+ bridge live only when that read says `.softwareBridge`. If a saved software action exists and a
+ fresh read shows the mouse lost F20, `shouldRestoreDpiBridge` allows one write to put it back
+ per connection (`dpiBridgeRestoreAttempted`). `dpiBridgeStatus` is the page's one-line state.
+- **Safety rules for the firmware write** (`BLEProtocol.parseDpiButtonBinding`,
+ `BluetoothDevice.writeDpiCycleBinding(_:read:write:)`):
+ 1. The entry is read first. Nothing is written unless the read succeeds and parses. A reply
+ that isn't a read of entry 0x60, or holds something that isn't a `DPIButtonBinding` (a macro,
+ a profile switch), throws `DPIButtonEntryError.unrecognized`. With the function-table layout
+ and flag 0, a factory block other than DPI Cycle throws `.notTheDpiButton`. With flag 1 the
+ second block is a HyperShift layer and says nothing, so only the current block is checked.
+ 2. The write is sent once. A refusal or timeout throws `DPIButtonWriteError.notTaken`.
+ 3. The entry is read again. Anything but the written binding throws `.notReadBack`, and no
+ second write follows.
+ `MouseController.dpiButtonErrorText(_:)` turns each into a plain sentence for the page. The
+ errors of the first read always mean nothing was written.
+ 4. The DPI button's entry and `SideButtonReset`'s (entries 0x04 and 0x05) never share an
+ entry, so a mouse can have both.
+- **UI** (`RemapView.swift`, `DpiCycleBindingSection`): one action menu whose None is "DPI Cycle
+ (default)", extra mouse choices that are firmware functions, software choices disabled without
+ Accessibility, the status line while a software action is set, an Input Monitoring button when
+ the keyboard tap is refused, and Retry / Read button assignment on errors.
+- **Tests.** `DpiCycleSoftwareBridgeTests` (per-device persistence, confirmation and restore
+ gating, keyboard tap mask opt-in, the Cobra enabled over Bluetooth only, the write path: no
+ write on a failed or unparsable read, one write then a read back, a HyperShift layer not taken
+ for the factory function, a mismatching read back not retried, "DPI Cycle (default)" writing
+ the factory block, error text); `DpiButtonGestureTests` (a hold driven by F20 and moves,
+ key-repeat and release handling, device changes, the mask); `BLEProtocolTests` for the parser.
+ No test touches a real mouse.
 
 ### 6.3.1 Reverse scrolling, `ScrollSettings.swift` and `ScrollDirection.swift`
 
@@ -494,6 +652,10 @@ model) runs a guided test and builds a report a maintainer can turn into a regis
  cable or dongle without a row for a mouse with a battery. Bluetooth only from a row.
 - `DeviceReportOutput.swift`: Copy, the GitHub issue, size fitting, and text limits.
  `DeviceReportSender.swift`: Send, a POST to the Worker.
+- **In MacRazer MX** none of this runs: `WorkerEndpoint.base` is always `nil` and
+ `build-app.sh` writes no address, so Send is hidden. The report windows' failure text and
+ links go to the fork's issues (`ProjectLinks.contact`, `ProjectLinks.newIssue`). What follows
+ is how upstream does it.
 - `WorkerEndpoint` (`AppInfo.swift`): the Worker's address, from the bundle's Info.plist, where
  `Scripts/build-app.sh` writes it from DOMAIN in the maintainer's private settings file. It is
  never in the repository. A build without it (a clone, a fork, CI, `swift run`) hides Send and
@@ -541,6 +703,9 @@ device test (§6.4), instead of relying on them finding the menu item.
  on by default) silences both the window and the card.
 
 ### 6.6 Usage stats, `UsageStats.swift` + the Worker
+**Off in MacRazer MX** (no Worker, §6.4), so everything below is upstream's behaviour and is
+never reached.
+
 Opt-in only. Nothing is sent until the person clicks Share. In a build without the Worker (see
 `WorkerEndpoint` above) nothing is asked, Settings has no Privacy page, and nothing is sent.
 
@@ -565,6 +730,19 @@ Opt-in only. Nothing is sent until the person clicks Share. In a build without t
 - **Seeing the numbers.** `npm run stats` in the Worker's repository prints a summary.
 
 ### 6.7 Updates, `UpdateChecker.swift` + `UpdateInstaller.swift`
+**Off in MacRazer MX.** `AppInfo.updatesEnabled` is `false`. The fork publishes no release feed
+of its own, and an update check that found upstream's releases would offer to install them over
+the fork, replacing it with an app that lacks its features. While it is false
+`AppDelegate` doesn't call the checks (`checkForUpdatesNow`, `checkForUpdatesIfDue`), the
+right-click menu has no Check for Updates…, the Updates pane is left out of Settings
+(`SettingsView.panes`, and the version row reads "Update checks are off"), and a new version is
+recorded and its announcement dismissed at launch (`dismissAnnouncement`) instead of shown. The
+updater is otherwise intact and unreachable, so upstream merges stay simple. To update the fork,
+pull and run `./Scripts/build-app.sh`. `ProjectLinks.releasesAPI` and the other release URLs point
+to `cortinadev/MacRazer-MX`, so if updates are ever switched on they never read upstream's
+releases. `ForkIdentityTests` fails if `updatesEnabled` or any of these links changes. The rest
+of this section is upstream's design.
+
 No Sparkle: the app is self-signed and shipped as a plain DMG, so there is no appcast. Updates
 come from GitHub Releases.
 
@@ -632,8 +810,9 @@ come from GitHub Releases.
 - Shared window styling: `titledSection` and the popover's `card` live in `CardComponents.swift`.
 
 ### 6.9 Crash reports, `CrashReport*.swift`
-Built and tested, but **switched off**: `CrashReporting.deliver` is nil until the Worker accepts
-crash reports. While it is nil the app doesn't look for crashes, never shows the window and
+Built and tested, but **switched off** (in MacRazer MX it stays off, with no Worker):
+`CrashReporting.deliver` is nil until the Worker accepts crash reports. The crash scanner
+looks for the fork's bundle ID (`CrashReportParser.bundleID`). While it is nil the app doesn't look for crashes, never shows the window and
 hides the setting.
 
 - On launch the app looks for `.ips` files macOS wrote for MacRazer since it last looked
@@ -653,8 +832,16 @@ hides the setting.
 
 | Permission | Why | How |
 |---|---|---|
-| **Input Monitoring** | Razer mice enumerate as keyboard/mouse HID; macOS gates opening them. | Requested at launch via `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)`; in-app banner + settings link. |
-| **Accessibility** | The `CGEvent` tap for button remapping and scroll reversal. | `AXIsProcessTrustedWithOptions`; Open Settings / Re-check in the relevant controls. |
+| **Input Monitoring** | Razer mice enumerate as keyboard/mouse HID; macOS gates opening them. Also needed for the tap to see the DPI button's F20 key (§6.3.3). | Requested at launch via `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)`; in-app banner + settings link. |
+| **Accessibility** | The `CGEvent` tap for button remapping, gestures and scroll reversal. | `AXIsProcessTrustedWithOptions`; Open Settings / Re-check in the relevant controls. |
+| **Bluetooth** | A mouse on Bluetooth is reached through CoreBluetooth. | Asked the first time such a mouse is found (`NSBluetoothAlwaysUsageDescription`). |
+
+**The fork's bundle ID is `com.cortinadev.macrazer-mx`** (upstream's is `com.macrazer.menubar`),
+set in `Packaging/Info.plist` and in both `codesign --identifier` calls in `Scripts/build-app.sh`.
+macOS keeps these grants, and the app's preferences, per bundle ID, so MacRazer MX starts with
+none of upstream's: grant Input Monitoring and Accessibility to "MacRazer MX" again. The tap only
+asks for key events once the DPI button has a software action; if macOS refuses them, remapping
+carries on with mouse events only and the page offers an Input Monitoring button.
 
 **Signing matters for permissions.** TCC binds a grant to the app's code identity. The
 build is **ad-hoc signed by default, so every rebuild changes the identity and breaks the
@@ -662,7 +849,8 @@ grant** (the toggle looks on but doesn't apply). Fixes:
 - `Scripts/setup-signing.sh` creates a **stable self-signed identity** ("Razer Cobra
  Self-Signed"); `build-app.sh` auto-uses it. Grant persists across rebuilds.
 - Or just develop with `swift run MacRazer`, which inherits the Terminal's grants.
-- `tccutil reset ListenEvent com.macrazer.menubar` clears a stale Input Monitoring grant.
+- `tccutil reset ListenEvent com.cortinadev.macrazer-mx` clears a stale Input Monitoring grant
+ (`tccutil reset Accessibility com.cortinadev.macrazer-mx` for Accessibility).
 
 For distribution to other users: every user still grants Input Monitoring once (unavoidable
 macOS security). Self-signed = works but Gatekeeper blocks the first launch. On macOS 15+ the
@@ -707,7 +895,7 @@ swift run MacRazer rgb breathing ff0000 # one colour; two for dual, none for ran
 swift run MacRazer brightness [0-100] # sweeps LOGO/SCROLL/ZERO/BACKLIGHT LEDs
 swift run MacRazer discover # which transaction ids the mouse answers to
 swift run MacRazer devicetest # the device test without its window, as JSON on stdout
-MacRazer.app/Contents/MacOS/MacRazer bluetoothtest # the read-only Bluetooth test, as JSON; needs the bundle's Info.plist, and the app quit
+"MacRazer MX.app/Contents/MacOS/MacRazer" bluetoothtest # the read-only Bluetooth test, as JSON; needs the bundle's Info.plist, and the app quit
 swift run MacRazer render-device-test review ran sent out.png # one test screen (dev)
 swift run MacRazer login-item [on|off] # the "Start at login" registration
 swift run MacRazer icon out.png # render the menu bar icon
@@ -752,8 +940,8 @@ that path draws the content but needs an explicit size, since there is no window
 | `AccessoryController.swift` | `Accessories`, the list of plugged-in accessories, and one `AccessoryController` each: its own device and queue, follow-the-mouse, who sets colours while Synapse runs. |
 | `AccessoryCard.swift` | An accessory's popover card, and the lighting controls it shares with the mouse's row (swatches, sliders). |
 | `RazerTransport.swift` | Transport protocol shared by USB and Bluetooth, plus the shared retry ladder. |
-| `BLEProtocol.swift` | Bluetooth LE framing and `RazerReport` translation. |
-| `BluetoothDevice.swift` | CoreBluetooth connection to Razer's vendor GATT service. |
+| `BLEProtocol.swift` | Bluetooth LE framing and `RazerReport` translation, DPI button entry 0x60 (`DPIButtonBinding`, `parseDpiButtonBinding`). |
+| `BluetoothDevice.swift` | CoreBluetooth connection to Razer's vendor GATT service; the DPI button's read-first, read-back write (`writeDpiCycleBinding`). |
 | `BluetoothProbe.swift` | The device test's own Bluetooth connection: GATT services, PnP ID, battery, read-only keys. |
 | `StatusItemClick.swift` | Whether a menu bar icon click opens the popover or the right-click menu. |
 | `FormControls.swift` | The windows' text fields, comment boxes and choice buttons. |
@@ -764,8 +952,9 @@ that path draws the content but needs an explicit size, since there is no window
 | `PopoverView.swift` | Main popover UI + page navigation. |
 | `PopoverTheme.swift` | Settings › Appearance: theme, glass, the resolved look, the popover and window backdrops. |
 | `ColorPickerPage.swift` | Inline hue/sat colour wheel page + shared `BackButton`. |
-| `ButtonRemapper.swift` | CGEvent tap, action model, presets, persistence, Accessibility. |
-| `RemapView.swift` | Button-config UI (inline + window), key recorder. |
+| `ButtonRemapper.swift` | CGEvent tap, action model (`RemapAction`, `GestureBindings`, `GestureSlot`), presets, gesture holds, the DPI button's F20 bridge, persistence, Accessibility. |
+| `GestureRecognizer.swift` | `GestureDirection` and the pure `GestureRecognizer`: net movement of one hold to at most one swipe (fork). |
+| `RemapView.swift` | Button-config UI (inline + window), gesture editor, DPI button section, key recorder. |
 | `RemapWindowController.swift` | Standalone window host for the remap UI. |
 | `DeviceProbe.swift` | The probes shared by the CLI and the device test. |
 | `DeviceProbeSession.swift` | Transaction id discovery and the recording channel. |
@@ -815,8 +1004,22 @@ that path draws the content but needs an explicit size, since there is no window
 | `MenuBarIcon.swift` | Vector-drawn menu bar mouse icon (+ triskelion). |
 | `RazerLogo.swift` | Embedded official Razer logo (vector PDF, base64) for the header. |
 
-The Cloudflare Worker behind Send and the usage stats is in the private SorcRR/macrazer-worker
-repository. `Tests/MacRazerTests/Fixtures/worker/` holds the fixtures it tests against.
+Tests added by the fork, in `Tests/MacRazerTests/`:
+
+| File | Covers |
+|---|---|
+| `GestureRecognizerTests.swift` | The recogniser alone: threshold, dominant axis, one swipe per hold, net movement. |
+| `ButtonRemapperGestureTests.swift` | Gesture holds through `ButtonRemapper.handle`: swallowing, pausing, cancel rules, defaults, persistence, tap mask. |
+| `DpiButtonGestureTests.swift` | A gesture on the DPI button, driven by F20 and pointer moves. |
+| `DpiCycleSoftwareBridgeTests.swift` | The DPI button bridge: saved action, confirmation and restore gating, the Cobra over Bluetooth only, the safe write path, error text. |
+| `ForkIdentityTests.swift` | Bundle ID and name everywhere they are written, the "MacRazer MX" data folder, no Worker, updates off, links to the fork. Fails if an upstream merge brings upstream's values back. |
+
+The fork also changed `CrashReportTests`, `DeviceReportOutputTests`, `IssueReportTests`,
+`RazerDevicesTests`, `ShortcutFlagsTests` and `UpdateAndLaunchTests` for the new identity,
+links and presets.
+
+The Cloudflare Worker behind Send and the usage stats is upstream's, in the private
+SorcRR/macrazer-worker repository. MacRazer MX never contacts it. `Tests/MacRazerTests/Fixtures/worker/` holds the fixtures it tests against.
 
 External: `reference/openrazer/` (cloned driver source, the protocol reference, gitignored)
 and `reference/openrazer-pr-2583.diff` (the Cobra HyperSpeed PR).

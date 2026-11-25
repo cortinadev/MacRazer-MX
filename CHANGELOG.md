@@ -7,6 +7,26 @@ expect rough edges until 1.0.
 ## [Unreleased]
 
 ### Added
+- **Gesture mode for the extra buttons.** In Configure Buttons, choose Gesture… for a button,
+  then hold it and move the mouse up, down, left or right to run a different action for each
+  direction. Press and release without moving and its Click action runs. The defaults are
+  Mission Control up, App Exposé down, Space Left and Space Right, and Click is what the button
+  did before. Each of the five slots takes any normal action: a shortcut preset, a recorded
+  shortcut, a mouse click, a media key or none. The swipe fires once per hold, when the
+  movement along the stronger axis reaches 50 points. The system actions go out as the standard
+  shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), so they have to be on in System Settings › Keyboard › Keyboard
+  Shortcuts › Mission Control. The pointer isn't frozen while you hold the button. Only tested
+  with unit tests so far, not on a mouse.
+- **An App Exposé ⌃↓ shortcut preset.** It's in the shortcut list of every button, and it's the
+  gesture's default for a swipe down.
+- **The DPI button can be remapped on the Cobra HyperSpeed over Bluetooth.** Until now only the
+  Basilisk V3 X HyperSpeed had it. The DPI button can take any action, a gesture included, or
+  go back to DPI Cycle (default). A function the mouse can do itself is written to it. Anything
+  else makes the mouse type F20, which MacRazer MX turns into the action, so an F20 from a
+  keyboard is caught too while one is set, and Input Monitoring may be needed. A DPI-button
+  gesture starts with None as its Click action. It isn't confirmed on a real Cobra yet, only by
+  unit tests. The USB cable and the 2.4 GHz dongle aren't supported for this.
+
 - **More mice from test reports.**
   - **Polling confirmed with the newer command** on the Viper 8KHz, both Basilisk V4 Pro
     links and the Mouse Dock Pro, which goes up to 8000 Hz.
@@ -34,6 +54,25 @@ expect rough edges until 1.0.
 - **Cynosa Lite tested.** It lost its UNTESTED tag after passing the lighting test.
 - **Joro keyboard.** It gets its own lighting card, with brightness and a static colour
   tested. Before, the app took it for a mouse.
+
+### Changed
+- **MacRazer MX: a fork with its own identity.** The app is now "MacRazer MX", with the bundle
+  ID `com.cortinadev.macrazer-mx` and its own Application Support folder, so it can be
+  installed next to upstream's MacRazer. Don't run both at once: both would talk to the mouse
+  and install event taps. Preferences and the Accessibility and Input Monitoring permissions
+  are separate from upstream's, so grant them again. The built app is "MacRazer MX.app", and
+  the SwiftPM target and executable are still called MacRazer.
+- **Update checks are off.** The fork has no release feed of its own, and offering upstream's
+  would replace it with an app without its features. The Check for Updates item, the Updates
+  page in Settings and the update cards are hidden. To update, build a newer checkout.
+- **Nothing is sent to upstream's report server.** No usage counts, crash reports, issue
+  reports or device reports go out, whatever the build says. Where the app used to offer an
+  email address, it points to the fork's GitHub issues, and the failure notes and report
+  windows open a new issue there instead of an email.
+- **The DPI button's write checks first.** The app reads the DPI button's entry before every
+  write and writes nothing if it can't confirm that the entry is the DPI button or doesn't
+  recognise what is saved there. It reads the entry back after, and says plainly if the mouse
+  didn't take the change.
 
 ### Fixed
 - **The device test can now confirm lighting on mice without brightness.** The Pro Click V2

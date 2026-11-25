@@ -1,4 +1,36 @@
-# Razer mouse control for macOS
+# MacRazer MX: Razer mouse control for macOS
+
+> **MacRazer MX is a fork of [MacRazer](https://github.com/SorcRR/MacRazer) by
+> [SorcRR](https://github.com/SorcRR)** (GPL-2.0-or-later), maintained by
+> [cortinadev](https://github.com/cortinadev) at
+> [cortinadev/MacRazer-MX](https://github.com/cortinadev/MacRazer-MX). Everything below that
+> isn't listed here is upstream's work, and the credit for it is theirs.
+>
+> **What it adds**
+> - **Gesture mode** for the mouse's extra buttons: hold a button and move the mouse up, down,
+>   left or right to run a different action for each direction (Mission Control, App Exposé,
+>   a Space to the left or right by default). See [Gesture mode](#gesture-mode).
+> - **DPI button remap** on the Razer Cobra HyperSpeed over Bluetooth, as well as the Basilisk
+>   V3 X HyperSpeed, where upstream only has it. The button can take any action, a gesture
+>   included. See [The DPI button](#the-dpi-button).
+>
+> **What is different from upstream**
+> - **No update checks.** The fork has no release feed of its own, and must never offer
+>   upstream's releases, which would replace it with an app that lacks these features. To update,
+>   pull and build again.
+> - **No reporting.** It never contacts upstream's report server, so it sends no usage counts,
+>   crash reports, issue reports or device reports. Where upstream offers an email address, the
+>   app points to this fork's [GitHub issues](https://github.com/cortinadev/MacRazer-MX/issues).
+> - **Its own identity**: the app is "MacRazer MX", bundle ID `com.cortinadev.macrazer-mx`, with
+>   its own preferences and its own Application Support folder. It can be installed next to
+>   upstream's MacRazer, but **don't run both at once**: both would talk to the mouse and install
+>   event taps. macOS also treats it as a different app, so Accessibility and Input Monitoring
+>   have to be granted to it again.
+> - **No published releases.** You build it from source (see [Build and run](#build-and-run)).
+>
+> The gesture and DPI button features have so far been exercised by unit tests only. The DPI
+> button remap is enabled for the Cobra HyperSpeed over Bluetooth but **not yet confirmed on
+> real hardware** (details [below](#the-dpi-button)).
 
 A native menu bar app to control Razer mice on macOS. Razer does ship a Synapse for Mac now,
 but its [supported-device list](https://mysupport.razer.com/app/answers/detail/a_id/14809/~/razer-synapse-for-mac-supported-and-compatible-devices)
@@ -6,7 +38,8 @@ is short and doesn't include the Cobra HyperSpeed or Atheris — this fills that
 to the mouse directly over USB HID (no kernel extension, no driver install), using a protocol
 ported from [OpenRazer](https://github.com/openrazer/openrazer).
 
-Website, with the download and setup help: [macrazer.com](https://macrazer.com/?utm_source=github&utm_campaign=readme)
+Upstream's website, whose download and setup help are for upstream's app, not this fork:
+[macrazer.com](https://macrazer.com/?utm_source=github&utm_campaign=readme)
 
 Works best with the **Razer Cobra HyperSpeed** and the **Razer Atheris**, the two devices this
 has actually been tested on. It detects any Razer mouse by name and should work with other
@@ -41,10 +74,14 @@ Razer mice that use the same HID protocol family, but those are untested, so tre
   Settings › Appearance. A two-column popover is there too. It's always used while a keyboard
   or mousepad is connected.
 - **Connection sounds** when the mouse connects or disconnects (can be turned off).
-- **Button remapping** for the side Back/Forward buttons (software, via a CGEvent tap):
-  keyboard shortcuts (presets or a custom recorder), mouse clicks, and media keys. Saved per
-  device. If another mouse app (Mac Mouse Fix, SteerMouse, BetterMouse) takes the side
-  buttons' clicks first, the page names it so you know which one to quit.
+- **Button remapping** for the extra buttons (software, via a CGEvent tap): keyboard
+  shortcuts (presets or a custom recorder), mouse clicks, media keys, or a **gesture** (hold
+  the button and swipe; see [Gesture mode](#gesture-mode)). Saved per device. If another mouse
+  app (Mac Mouse Fix, SteerMouse, BetterMouse) takes the side buttons' clicks first, the page
+  names it so you know which one to quit.
+- **DPI button remap** over Bluetooth on the Basilisk V3 X HyperSpeed and the Cobra HyperSpeed
+  (the Cobra's is not yet confirmed on hardware): any action, a gesture included, or back to
+  DPI Cycle. See [The DPI button](#the-dpi-button).
 - **Reverse scrolling on Razer mice**, under Settings › General. Reverses wheel and tilt
   scrolling on Razer mice while trackpads and other mice keep their directions. Off by
   default and saved once for the app. Requires Accessibility and MacRazer running; it does
@@ -65,11 +102,9 @@ Razer mice that use the same HID protocol family, but those are untested, so tre
   the app is not running.
 - **Starts at login** (on by default, switchable in the popover and in System Settings ›
   General › Login Items), so the menu bar item is there after a reboot.
-- **Updates install themselves**: when a new release is out, "Update & Restart" downloads it,
-  checks it, replaces the installed app and relaunches — no dragging a DMG. It falls back to
-  the plain DMG download when MacRazer is somewhere it can't replace itself (still on the disk
-  image, or in a folder you can't write to). The card also links to **what's in the release**,
-  so the choice isn't blind.
+- **No update checks in MacRazer MX.** Upstream's app updates itself from its GitHub
+  releases. The fork has switched that off (`AppInfo.updatesEnabled`), so there is no Check for
+  Updates item and no Updates page in Settings. You update by building a newer checkout.
 
 Settings persist across app restarts and reconnects, and the menu bar updates on its own when
 the mouse connects, disconnects, or sleeps.
@@ -81,7 +116,7 @@ goes to two columns. Each device gets a card, and a keyboard can follow the mous
 
 <img width="760" alt="Two-column popover: the mouse's controls, and under Other Razer devices a Cynosa Chroma following the mouse, a Firefly V2 and an Ornata V3 on Wave" src=".github/screenshots/popover-accessories.png" />
 
-**Button remapping.** Point each extra button at a shortcut, a click or a media key.
+**Button remapping.** Point each extra button at a shortcut, a click, a media key or a gesture.
 
 <img width="440" alt="Configure Buttons: Back mapped to Copy and Forward to Paste" src=".github/screenshots/buttons.png" />
 
@@ -106,6 +141,10 @@ goes to two columns. Each device gets a card, and a keyboard can follow the mous
 <img width="440" alt="Device test, DPI step: sets a value 50 away, reads it back, puts the original back, and lists the stages" src=".github/screenshots/device-test.png" />
 
 ## Supported mice
+
+The table is upstream's, built from reports sent to upstream. "Maintainer" means SorcRR, and
+nothing here has been re-verified for MacRazer MX. Its two additions, gestures and the DPI
+button remap, are not in this table: they have only been exercised by unit tests.
 
 "Verified" below means someone ran the CLI probes or the in-app test against the mouse and
 posted the output, not that the protocol tables say it should work. Where nobody has, the row
@@ -189,8 +228,8 @@ column is about who has actually seen it happen.
 
 **Have a mouse that isn't verified?** The quickest way to help is in the app. Right-click the
 menu bar icon and choose **Help Support This Mouse…**. It runs the same probes as the
-commands below, puts every setting back, and builds the report for you. **Send** emails it to
-the maintainer, or you can copy it or open a GitHub issue with it. If part of your mouse is
+commands below, puts every setting back, and builds the report for you. MacRazer MX has no
+**Send** button: you copy the report or open a GitHub issue with it, on this fork's tracker. If part of your mouse is
 already verified, the test lists what works and offers to check only what's missing. It also
 says which of the mouse's other connections (cable, dongle, Bluetooth) still need a report. On
 a verified mouse the item reads **Test This Mouse…**. The window says no test is needed, but you
@@ -234,31 +273,92 @@ You can read the whole report on the last screen before it goes anywhere.
 Never in it: the mouse's serial number, or anything else about your Mac.
 
 Where it goes depends on the button. **Copy** puts it on your clipboard. **Open GitHub issue**
-makes it public, so it leaves out your email address. **Send** emails it to the maintainer
-through a small Cloudflare Worker, which keeps nothing but a count of reports per day. Its code
-is in a private repository, and builds from this repository don't have Send: they offer Copy
-and the GitHub issue instead.
+makes it public, so it leaves out your email address; it opens a new issue on
+[cortinadev/MacRazer-MX](https://github.com/cortinadev/MacRazer-MX/issues). Upstream's app can
+also **Send** a report through its own server. MacRazer MX never contacts that server, so
+nothing is sent unless you send it yourself.
 
 Adding a model is a small change to a registry plus on-hardware verification. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Gesture mode
+
+In Configure Buttons, any extra button can be set to **Gesture…**. Hold the button and move
+the mouse up, down, left or right, and that direction's action runs. Press and release without
+moving and the **Click** action runs.
+
+- **Defaults** when you choose Gesture…: up Mission Control, down App Exposé, left Space Left,
+  right Space Right. Click is what the button did before (Back still goes back, the wheel click
+  still middle-clicks).
+- **Each of the five slots** takes any ordinary action: a shortcut preset, a recorded shortcut,
+  a mouse click, a media key, or None. A gesture can't be nested inside a gesture.
+- **The swipe fires once per hold**, as soon as the movement along the stronger axis reaches 50
+  points, not at release. Going right and then back again counts as no movement, so it is
+  still a click.
+- **The system actions are keyboard shortcuts.** MacRazer MX sends the standard macOS shortcuts
+  (⌃↑, ⌃↓, ⌃←, ⌃→), so they must be switched on in System Settings › Keyboard › Keyboard
+  Shortcuts › Mission Control. If one is off, that swipe does nothing.
+- **The pointer is not frozen** while you hold the button; it moves as usual. The button's own
+  press, drag events and release are swallowed, so the app under the pointer doesn't see them.
+- **Only the extra buttons** (the ones macOS reports as "other" mouse buttons) can be gestures,
+  not the left and right buttons. The Click action fires when the button comes back up, so a
+  gesture button can't be held to drag.
+- Like every remap, it works while MacRazer MX is running and the mouse is connected, and needs
+  Accessibility. It only watches for pointer drags while at least one button is a gesture.
+
+### The DPI button
+
+Upstream can turn the **Basilisk V3 X HyperSpeed's** DPI button into another action over
+Bluetooth. MacRazer MX enables the same for the **Razer Cobra HyperSpeed over Bluetooth**, and
+lets the DPI button take any action, **Gesture…** included. It's a section of Configure Buttons
+that only appears for a mouse on Bluetooth that supports it.
+
+**Not yet confirmed on real hardware.** On the Basilisk V3 X this is upstream's tested
+behaviour. On the Cobra HyperSpeed it is switched on, and so far only checked by unit tests:
+nobody has yet confirmed on a real Cobra that entry `0x60` of its button table is the DPI
+button. MacRazer MX is built to fail safe, as described below, but treat it as experimental
+there, and please report what you see in an issue.
+
+How it works:
+
+- The mouse keeps what each button does in an onboard function table, and entry `0x60` is the
+  DPI button's. For a function the mouse can do itself (a mouse button, a keyboard shortcut it
+  can type, or DPI Cycle), MacRazer MX writes that function, and it keeps working without the
+  app.
+- For anything else (media keys, Double Click, a gesture, a key the mouse can't type) it writes
+  **F20** to the entry, so the button types F20. The event tap turns F20 into your action.
+  That needs MacRazer MX running with Accessibility, and the tap then also sees key events, so
+  **Input Monitoring** may be needed too. An F20 from a keyboard is captured while an action is
+  set (not with ⌘, ⌃, ⌥ or ⇧ held).
+- **Safety.** Before every write the app reads the entry, and if it can't confirm that the entry
+  is the DPI button, or doesn't recognise what is saved there, it writes nothing. After a write
+  it reads the entry back and reports a failure if it differs. **DPI Cycle (default)** writes
+  the factory function back.
+- A **DPI-button gesture** is driven by F20 going down and up, plus the pointer's movement. Its
+  Click slot starts as **None**, because software can't cycle the DPI.
+- **Not supported:** the USB cable and the 2.4 GHz dongle. There the firmware handles the DPI
+  button onboard, and the command to rewrite it over USB isn't implemented.
 
 ### Buttons MacRazer cannot see
 
 Remapping works by watching macOS mouse events, so it can only reach buttons the mouse
 actually reports to the Mac. Some buttons are handled *inside* the mouse and never send
-anything — no app can detect those, MacRazer included.
+anything, so no app can detect those as they are, MacRazer MX included. The exception is the
+DPI button on the mice listed [above](#the-dpi-button), which MacRazer MX can ask the mouse to
+turn into an F20 key it does see.
 
-The clearest example is the **Basilisk's multi-function trigger** (the third side button),
-which ships assigned to **Razer Hypershift**. Hypershift is a modifier: held down, it
-switches every other button to a second onboard layer. The firmware resolves that layer
-itself, so pressing the trigger alone puts no report on the wire at all — verified by
-watching every HID interface the mouse exposes while it was pressed.
+The clearest example of one that stays out of reach is the **Basilisk's multi-function
+trigger** (the third side button), which ships assigned to **Razer Hypershift**. Hypershift is
+a modifier: held down, it switches every other button to a second onboard layer. The firmware
+resolves that layer itself, so pressing the trigger alone puts no report on the wire at all,
+verified by watching every HID interface the mouse exposes while it was pressed.
 
 To make it remappable, reassign it from Hypershift to a normal key or mouse button in
-Razer Synapse (Windows only — Razer dropped macOS support). The assignment is stored in the
-mouse's onboard memory, so it persists on the Mac afterwards and MacRazer will then see the
-button like any other. MacRazer deliberately does not reprogram onboard assignments itself;
-that would mean reverse-engineering Synapse, which Razer's EULA forbids.
+Razer Synapse (Windows only, Razer dropped macOS support). The assignment is stored in the
+mouse's onboard memory, so it persists on the Mac afterwards and MacRazer MX will then see the
+button like any other. Apart from the DPI button's entry and the side-button reset, MacRazer MX
+deliberately does not reprogram onboard assignments itself; that would mean reverse-engineering
+Synapse, which Razer's EULA forbids.
 
 ### Known limitation: two identical mice without a hardware serial
 
@@ -275,8 +375,8 @@ macOS 14 or later, on Apple Silicon or Intel.
 
 **Connect over the 2.4 GHz dongle or a USB-C cable.** That's where Razer exposes its full
 control protocol. The **Cobra HyperSpeed and Basilisk V3 X HyperSpeed also work over
-Bluetooth**: battery, DPI stages, brightness and a static lighting colour. Polling rate, other
-lighting effects, custom DPI values and profiles still need the dongle or a cable. On the
+Bluetooth**: battery, DPI stages, brightness, a static lighting colour and the DPI button remap.
+Polling rate, other lighting effects, custom DPI values and profiles still need the dongle or a cable. On the
 Basilisk V3 Pro 35K and Basilisk V4 HyperSpeed, only the battery is confirmed over Bluetooth so far. MacRazer asks for Bluetooth access the
 first time it finds the mouse there.
 
@@ -286,29 +386,36 @@ mouse on Bluetooth.
 
 ## Install
 
-Download [`MacRazer.dmg`](https://reports.macrazer.com/v1/download?via=site&page=readme)
-(release notes on the [latest release](../../releases/latest) page), open it, and drag
-**MacRazer** into Applications.
+MacRazer MX has no published releases, so you build it from source. You need macOS 14 or
+later and Xcode 16 / Swift 6.1 (full Xcode, not only the Command Line Tools, since the build
+is universal).
 
-This build is unsigned (no paid Apple Developer ID), so the first time you open it macOS
-blocks it. You'll see "MacRazer Not Opened" with only a **Done** button, or on older macOS
-"cannot be opened because it is from an unidentified developer" or "is damaged and can't be
-opened". It's the standard warning for any app without a paid Apple Developer ID, not a real
-problem. To open it anyway, do **one** of:
+```sh
+git clone https://github.com/cortinadev/MacRazer-MX.git
+cd MacRazer-MX
+./Scripts/setup-signing.sh      # one-time: a stable self-signed identity (see Permissions)
+./Scripts/build-app.sh          # produces "MacRazer MX.app"
+open "MacRazer MX.app"
+```
 
-- Click **Done**, then go to System Settings > Privacy & Security, scroll to the bottom and
-  click **Open Anyway** next to the MacRazer message. Confirm with your password or Touch ID.
-- Or, from Terminal: `xattr -cr /Applications/MacRazer.app`, then open it normally.
-- On macOS 14 and earlier you can also right-click (or Control-click) **MacRazer.app** in
+Move **MacRazer MX.app** to Applications if you want it there. To update, pull and build again.
+
+The app is self-signed, not signed with a paid Apple Developer ID. An app you build on your own
+Mac is not quarantined, so it normally opens straight away. If you copy it from another Mac,
+or macOS blocks it ("MacRazer MX Not Opened", "is from an unidentified developer", or "is
+damaged and can't be opened"), do **one** of:
+
+- Go to System Settings › Privacy & Security, scroll to the bottom and click **Open Anyway**
+  next to the MacRazer MX message. Confirm with your password or Touch ID.
+- Or, from Terminal: `xattr -cr "/Applications/MacRazer MX.app"`, then open it normally.
+- On macOS 14 and earlier you can also right-click (or Control-click) **MacRazer MX.app** in
   Finder, choose **Open**, then **Open** again. macOS 15 removed this shortcut.
 
-You only need to do this once. Getting rid of this step for good needs a paid Apple Developer
-ID ($99 a year). If you'd like to help with that, tips go to
-[ko-fi.com/sorcrr](https://ko-fi.com/sorcrr).
+On first launch it asks for **Input Monitoring** (and **Accessibility** for button remapping or
+scroll reversal); see [Permissions](#permissions) below.
 
-After that it launches like any other app. It will then ask for **Input Monitoring**
-permission (and **Accessibility** for button remapping or scroll reversal); see [Permissions](#permissions)
-below.
+**Running it next to upstream's MacRazer.** The two have different bundle IDs and data folders,
+so both can be installed. Quit one before starting the other.
 
 ## Build and run
 
@@ -320,19 +427,28 @@ swift run MacRazer
 
 # Or build a standalone .app:
 ./Scripts/setup-signing.sh      # one-time: a stable self-signed identity (see Permissions)
-./Scripts/build-app.sh          # produces "MacRazer.app", versioned "<version>-dev"
-open "MacRazer.app"
+./Scripts/build-app.sh          # produces "MacRazer MX.app", versioned "<version>-dev"
+open "MacRazer MX.app"
 ```
 
-The screenshots in this README and on the website come from preview data, no mouse needed:
-`./Scripts/render-screenshots.sh` writes them all to `dist/screenshots/`.
+The SwiftPM target and the executable inside the bundle are still called `MacRazer`, as in
+upstream, so `swift run MacRazer` and the commands below are unchanged.
+
+The screenshots in this README come from preview data, no mouse needed:
+`./Scripts/render-screenshots.sh` writes them all to `dist/screenshots/`. They show upstream's
+MacRazer and may not match this fork's windows exactly.
 
 ## Permissions
 
 - **Input Monitoring** is required to send and receive HID reports to the mouse. The app
-  requests it on launch; grant it in System Settings > Privacy & Security > Input Monitoring.
-- **Accessibility** is required for button remapping and scroll reversal (the event tap). The remap screen
-  has a button to open the right settings pane.
+  requests it on launch; grant it in System Settings › Privacy & Security › Input Monitoring.
+  It is also what lets the event tap see the DPI button's F20 key.
+- **Accessibility** is required for button remapping, gestures and scroll reversal (the event
+  tap). The remap screen has a button to open the right settings pane.
+- **Bluetooth**, the first time it finds a mouse on Bluetooth.
+
+macOS keeps these grants per app, by bundle ID. MacRazer MX is a different app from MacRazer, so
+anything you granted upstream's app doesn't carry over: grant both again for **MacRazer MX**.
 
 macOS binds a permission grant to the app's code signature. An ad-hoc build gets a new
 signature on every rebuild, which resets the grant, so either run `Scripts/setup-signing.sh`
@@ -359,7 +475,7 @@ swift run MacRazer rgb breathing ff0000 # breathing (two colours for dual, none 
 swift run MacRazer brightness [0-100]   # read or set LED brightness
 swift run MacRazer discover             # which transaction ids the mouse answers to
 swift run MacRazer devicetest           # the in-app device test, printed as JSON
-MacRazer.app/Contents/MacOS/MacRazer bluetoothtest  # the read-only Bluetooth test (quit the app first)
+"MacRazer MX.app/Contents/MacOS/MacRazer" bluetoothtest  # the read-only Bluetooth test (quit the app first)
 ```
 
 ## How it works
@@ -375,21 +491,26 @@ are in [Documentation/DOCUMENTATION.md](Documentation/DOCUMENTATION.md). The com
 
 ## Built with
 
-MacRazer was built with [Hiveship](https://hiveship.app/), an issue tracker for planning work,
+Upstream's MacRazer was built with [Hiveship](https://hiveship.app/), an issue tracker for planning work,
 tracking bugs, and handing issues to coding agents as well as the people on your team.
 
 ## Contributing
 
-Pull requests are welcome, especially **device profiles** so this works on more Razer mice.
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+Pull requests and issues are welcome on
+[cortinadev/MacRazer-MX](https://github.com/cortinadev/MacRazer-MX), especially **device
+profiles** so this works on more Razer mice. Changes that aren't specific to the fork's features
+may be better sent to [upstream](https://github.com/SorcRR/MacRazer). See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
 GPL-2.0-or-later, see [LICENSE](LICENSE). The project is GPL because its HID protocol is
-derived from OpenRazer. Full attribution and the trademark notice are in [NOTICE.md](NOTICE.md).
+derived from OpenRazer. MacRazer MX is a modified version of SorcRR's MacRazer; full
+attribution, the list of the fork's changes and the trademark notice are in [NOTICE.md](NOTICE.md).
 
 ## Support
 
-This is a free, unpaid community project. If it is useful to you, you can leave a tip:
-[ko-fi.com/sorcrr](https://ko-fi.com/sorcrr). The first goal is an Apple Developer ID ($99 a
-year), so MacRazer can be signed and opens without the security warning.
+This is a free, unpaid community project. The tip jar below is the original author's, for
+upstream's MacRazer, which this fork is built on. If MacRazer is useful to you, you can leave
+a tip: [ko-fi.com/sorcrr](https://ko-fi.com/sorcrr). The first goal is an Apple Developer ID
+($99 a year), so MacRazer can be signed and opens without the security warning.

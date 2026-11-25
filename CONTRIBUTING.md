@@ -1,6 +1,9 @@
 # Contributing
 
-Thanks for helping! This is a community macOS control app for Razer mice. By contributing you
+Thanks for helping! This is a community macOS control app for Razer mice. This repository is
+**MacRazer MX**, a fork of [SorcRR/MacRazer](https://github.com/SorcRR/MacRazer): open issues and
+pull requests here, at [cortinadev/MacRazer-MX](https://github.com/cortinadev/MacRazer-MX).
+Changes that aren't specific to the fork may be better sent to upstream. By contributing you
 agree your contributions are licensed under **GPL-2.0** (the project license).
 
 Start with **[Documentation/DOCUMENTATION.md](Documentation/DOCUMENTATION.md)**, it explains the architecture,
@@ -11,8 +14,8 @@ the HID protocol, and every feature.
 swift run MacRazer # menu bar app (uses your Terminal's permission grants)
 swift run MacRazer battery # CLI diagnostics: battery / dpi / poll / rgb / brightness / info
 swift test # unit tests (protocol codec, battery models, persistence — no hardware needed)
-./Scripts/build-app.sh # build a standalone .app
-./Scripts/make-dmg.sh # package the .app into dist/MacRazer.dmg
+./Scripts/build-app.sh # build a standalone "MacRazer MX.app"
+./Scripts/make-dmg.sh # package the .app into a DMG under dist/ (the fork publishes no releases)
 ./Scripts/release.sh 0.3.0 --dry-run # preview a release (see 'Cutting a release' below)
 ```
 macOS 14+, Swift 6.1 / Xcode 16+. CI runs `swift build && swift test` on pushes to master
@@ -74,8 +77,8 @@ real hardware so far; README's table says which, and what was run on each.
 
 The easiest way is the app's own test. MacRazer offers it on its own when an unverified mouse
 connects. Otherwise right-click the menu bar icon, choose **Help Support This Mouse…**, and
-press **Send** or open a GitHub issue on its last screen. (Send is only in
-the released app: a build from source has no report server, so it offers Copy and the issue.) It runs
+copy the report or open a GitHub issue on its last screen. (MacRazer MX has no Send: it
+never contacts upstream's report server, so it offers Copy and the issue.) It runs
 everything below, plus transaction id discovery, and puts every setting back. From source,
 `swift run MacRazer devicetest` prints the same report as JSON.
 
