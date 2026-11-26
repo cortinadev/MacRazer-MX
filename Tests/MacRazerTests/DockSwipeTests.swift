@@ -540,10 +540,19 @@ final class DockSwipeTests: XCTestCase {
         }
     }
 
-    private func attachedEvent(_ payload: DockSwipe.HIDPayload, userData: Int64) throws -> (CGEvent, HIDReader.Event) {
-        if let missing = DockSwipe.AttachedEvent.missingSymbol {
-            throw XCTSkip("this Mac lacks \(missing), which the attached method needs")
+    /// The attached-event tests run only where the app itself uses that method: macOS 27 and
+    /// later with every private call present (`DockSwipe.method`). The calls exist on older
+    /// macOS too, but how they behave there (whether the attach copies the IOHIDEvent, as these
+    /// tests assume) was only ever measured on 27, and the app never calls them below it. So
+    /// on macOS 26 and on CI's older runners they skip instead of risking a crash.
+    private func skipUnlessAttachedMethod() throws {
+        guard DockSwipe.method == .attachedHIDEvent else {
+            throw XCTSkip("the attached method is only used, and only measured, on macOS 27 and later with its calls present")
         }
+    }
+
+    private func attachedEvent(_ payload: DockSwipe.HIDPayload, userData: Int64) throws -> (CGEvent, HIDReader.Event) {
+        try skipUnlessAttachedMethod()
         guard let reader = HIDReader() else { throw XCTSkip("this Mac lacks a call that reads an attached IOHIDEvent") }
         let event = try XCTUnwrap(DockSwipe.AttachedEvent.event(for: payload, userData: userData))
         let hid = try XCTUnwrap(reader.read(event, integers: [DockSwipe.HIDPayload.motionField, DockSwipe.HIDPayload.flavorField],
@@ -592,9 +601,7 @@ final class DockSwipeTests: XCTestCase {
     /// once per swipe, as it begins, so a swipe keeps one sign however the setting changes.
     /// The end still goes out again twice. Skips on a Mac without the calls.
     func testThePosterSendsOneAttachedEventAFrameSignedAsTheSwipeBegan() throws {
-        if let missing = DockSwipe.AttachedEvent.missingSymbol {
-            throw XCTSkip("this Mac lacks \(missing), which the attached method needs")
-        }
+        try skipUnlessAttachedMethod()
         guard let reader = HIDReader() else { throw XCTSkip("this Mac lacks a call that reads an attached IOHIDEvent") }
         let sent = Sent()
         var natural = true, asked = 0
@@ -667,9 +674,7 @@ final class DockSwipeTests: XCTestCase {
     /// whatever Natural scrolling says by then, so the Dock snaps back the way it came, and it
     /// goes out again like any end. Skips on a Mac without the calls.
     func testAnAttachedCancelKeepsTheSignTheSwipeBeganWith() throws {
-        if let missing = DockSwipe.AttachedEvent.missingSymbol {
-            throw XCTSkip("this Mac lacks \(missing), which the attached method needs")
-        }
+        try skipUnlessAttachedMethod()
         guard let reader = HIDReader() else { throw XCTSkip("this Mac lacks a call that reads an attached IOHIDEvent") }
         let sent = Sent()
         var natural = true
@@ -695,9 +700,7 @@ final class DockSwipeTests: XCTestCase {
     /// Built and dropped many times, the heap stays where it was, so the CGEvent alone owns what
     /// it carries. Nothing is posted. Skips on a Mac without the calls.
     func testAttachedEventsLeaveNothingBehind() throws {
-        if let missing = DockSwipe.AttachedEvent.missingSymbol {
-            throw XCTSkip("this Mac lacks \(missing), which the attached method needs")
-        }
+        try skipUnlessAttachedMethod()
         func heapInUse() -> Int {
             var stats = malloc_statistics_t()
             malloc_zone_statistics(nil, &stats)
