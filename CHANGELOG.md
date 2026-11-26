@@ -165,6 +165,18 @@ expect rough edges until 1.0.
 - **Cynosa Lite tested.** It lost its UNTESTED tag after passing the lighting test.
 - **Joro keyboard.** It gets its own lighting card, with brightness and a static colour
   tested. Before, the app took it for a mouse.
+- **A test for drags under load.** `Scripts/stress-drag-test.sh` measures how late the
+  extra-button drags that go through the event tap reach it, to check whether a busy MacRazer
+  MX could make middle-drag panning stutter in an app like Blender. Run it with `baseline` (no
+  load), `busy` (the app's main thread blocked 20 ms in every 50 ms), `cpu` (two busy loops
+  per core) or `both`, for 60 s by default, and hold the wheel and drag meanwhile. It prints a
+  line a second with the drag count and rate, the delay's p50, p95 and maximum, and the
+  longest time inside the tap, then puts back every setting it changed. It needs a button
+  other than the wheel set to Gesture, and the dongle or cable at 1000 Hz for a result that
+  means something: over Bluetooth the Cobra HyperSpeed reports about 125 times a second. The
+  two switches it uses are hidden defaults that act without a relaunch, record only numbers,
+  and can't stay on: the busy main thread ends after its run and is cleared at every launch,
+  and each CPU loop ends by itself. Not yet run with a real mouse.
 
 ### Changed
 - **MacRazer MX: a fork with its own identity.** The app is now "MacRazer MX", with the bundle

@@ -714,6 +714,36 @@ described here.
    nothing outside the app can see what its tap receives. The flag is read once at launch.
    (An earlier build had a `gestureDebugDeviceMode` key that wrote the device mode from the
    trace; it is gone, and the trace only reads what the mouse does.)
+- **Drag timing under load** (`DragTiming.swift`, `MainThreadBusy.swift`,
+ `Scripts/stress-drag-test.sh`). While a button is a gesture the tap asks for every
+ extra-button drag (`eventMask`), and an active tap holds each event it asks for, for every
+ app, until its callback on the main run loop returns. So a busy main thread could delay a
+ middle-drag pan in Blender. Two hidden switches measure and provoke that. Both are watched
+ with KVO on the defaults (`DefaultsKeyWatcher`, which hears a `defaults write` from another
+ process), so neither needs a relaunch:
+   - `dragTimingLog` (Bool, off by default, also read at launch). On, the tap callback times
+     each `.otherMouseDragged`: the delay from the event's own timestamp to the callback
+     starting, and the time inside the callback. `TapTimingWindow` (pure) gathers them per
+     second, and `DragTiming` writes one line per window to `gesture.log`, off the main thread:
+     `DRAGTIMING n=<events> per_s=<rate> delay_p50_ms=... delay_p95_ms=... delay_max_ms=...
+     callback_max_ms=... [untimed=<n>]`, plus `DRAGTIMING on|off` (the on line says whether the
+     tap asks for drags) and `DRAGTIMING tap disabled by timeout|user input`. Numbers only,
+     never a line per event. Off, the callback pays one boolean test. The timestamp is read in
+     nanoseconds or in mach ticks, whichever puts it a moment before now (`TapEventClock`):
+     AppKit reads it as nanoseconds, and it has been reported to carry ticks, which on Apple
+     Silicon are 125/3 ns. One it can't place counts as `untimed`.
+   - `dragTimingBusy` (String `block/every/seconds`, say `20/50/60`). Blocks the main thread
+     for `block` ms every `every` ms for `seconds` s (`MainThreadBusy`; block 1 to 500 ms, at
+     most 300 s, anything else is refused), then drops the key. Deleting it stops early, and
+     every launch clears it unread, so it can't outlast a run.
+ `./Scripts/stress-drag-test.sh baseline|busy|cpu|both [--seconds N] [--busy BLOCK/EVERY]
+ [--workers N]` is the way in. It checks the running app answers, turns `dragTimingLog` on,
+ says what to do (the dongle or cable at 1000 Hz, as Bluetooth is about 125 Hz; a gesture on
+ a button other than the wheel; hold the wheel and drag), starts the load for the run (60 s by
+ default; `cpu` is two busy loops per logical core, each ending by itself two seconds after the
+ run), then prints the run's `DRAGTIMING` lines and a summary and puts both keys back as they
+ were, on Ctrl-C too. `cpu-only` loads the CPU and touches nothing else. It drives the
+ installed bundle's defaults domain, so not a `swift run` build. Tests: `DragTimingTests`.
 - **Tests.** `GestureRecognizerTests` (threshold, dominant axis, once per hold, net movement),
  `ButtonRemapperGestureTests` (swallowing, pass-through while paused, the cancel rules, nested
  gestures, defaults, persistence, the mask, Hold inert on a side button), driven through
@@ -1428,6 +1458,8 @@ that path draws the content but needs an explicit size, since there is no window
 | `ColorPickerPage.swift` | Inline hue/sat colour wheel page + shared `BackButton`. |
 | `ButtonRemapper.swift` | CGEvent tap, action model (`RemapAction`, `GestureBindings`, `GestureSlot`), presets, gesture holds, the DPI button (F20 bridge on the Basilisk V3 X, private keys and driver mode on the Cobra), persistence, Accessibility. |
 | `GestureDebugLog.swift` | Hidden `gestureDebugLog` default: a trace of gesture holds, F20 timing, pointer deltas, the mouse's HID reports (`GestureDebugHIDWatch`, needs Input Monitoring), the GATT characteristics, unsolicited Bluetooth notifications, read-only probes at connect, device-mode changes and private-key events in `~/Library/Logs/MacRazer MX/gesture.log`; never which key a keyboard typed (fork). |
+| `DragTiming.swift` | Hidden `dragTimingLog` default: how late the extra-button drags reach the tap and how long its callback takes, a `DRAGTIMING` line a second in `gesture.log` (`TapTimingWindow` and `TapEventClock`, pure), and `DefaultsKeyWatcher` for switches that act without a relaunch (fork). |
+| `MainThreadBusy.swift` | Hidden `dragTimingBusy` default: blocks the main thread on a bounded schedule, for `Scripts/stress-drag-test.sh` (fork). |
 | `DockSwipe.swift` | The trackpad's dock swipe from a mouse: the event format (`DockSwipe`), `SystemSwipe` and `SystemSwipeSlots`, the pure `DockSwipeTracker`, `DockSwipeOutput` and `DockSwipePoster`. Mission Control, App Exposé and Spaces follow the pointer in a gesture: CGEvent fields on macOS 26 and earlier, an attached IOHIDEvent on macOS 27 (fork). |
 | `GestureRecognizer.swift` | `GestureDirection` and the pure `GestureRecognizer`: net movement of one hold to at most one swipe (fork). |
 | `RemapView.swift` | Button-config UI (inline + window), gesture editor, DPI button section, key recorder. |
