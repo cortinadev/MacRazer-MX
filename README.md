@@ -446,7 +446,8 @@ stops acting on the DPI button and reports it as "private keys" in HID input rep
 
 How driver mode is handled:
 
-- **When it is on.** Only while the Cobra is connected over Bluetooth, the DPI button has an
+- **When it is on.** Only while the Cobra is connected over Bluetooth or its USB cable (not
+  the dongle), the DPI button has an
   action MacRazer MX carries out, and Accessibility and Input Monitoring are both granted
   (without them the button keeps cycling DPI in the firmware rather than doing nothing). The
   Buttons page shows where it stands, and why when it couldn't be set.
@@ -519,9 +520,20 @@ How the rest works (both mice):
   trace itself only reads from the mouse. The HID part needs **Input Monitoring**, so relaunch
   after granting it. Attach the log to an issue. Turn it off with
   `defaults delete com.cortinadev.macrazer-mx gestureDebugLog`.
-- **Not supported:** the USB cable and the 2.4 GHz dongle. There the firmware handles the DPI
-  button onboard, and neither the command to rewrite it nor driver mode is implemented for the
-  DPI button over USB.
+- **On the USB cable (Cobra HyperSpeed only).** Plugged in by cable, the Cobra's DPI button
+  works through the same driver mode, with the same actions, gestures and Hold slot as over
+  Bluetooth. The mode is set with a different command, but the keys it reports are the same
+  (`0x52` short press, `0xD2` long press). The difference is that nothing is written to the
+  button's entry over USB: **DPI Cycle (default)** is the firmware's own, and every other
+  choice, a mouse button or a keyboard shortcut included, is carried out by MacRazer MX and
+  needs it running with Accessibility and Input Monitoring. Tried on a real Cobra on its
+  cable (macOS 27.2.1): short press, long press and hold and swipe work, and driver mode
+  stayed on across the app's 30-second checks. **Not verified:** what happens to driver mode
+  when you unplug the cable and the mouse moves to the dongle, sleep and wake on the cable,
+  and whether the "DPI Cycle (default)" label is right on the cable if you had written
+  another function to the button over Bluetooth (the entry can't be read over USB).
+- **Not supported:** the 2.4 GHz dongle (`0x00DB`), where nothing has been tried, and the
+  Basilisk V3 X on the cable or the dongle, where the firmware handles the DPI button onboard.
 - **Credits.** The device-mode key and the private-key report format were learned from other
   open-source projects' documentation: [OpenRazer](https://github.com/openrazer/openrazer),
   OpenSnek (by gh123man), OpenSynapse and ergo-control. No code from them is used.
@@ -532,8 +544,9 @@ Remapping works by watching macOS mouse events, so it can only reach buttons the
 actually reports to the Mac. Some buttons are handled *inside* the mouse and never send
 anything, so no app can detect those as they are, MacRazer MX included. The exception is the
 DPI button on the mice listed [above](#the-dpi-button), which MacRazer MX can see on the Cobra
-by switching it to driver mode (it then reports the button as private keys), and on the Basilisk
-V3 X by asking the mouse to turn it into an F20 key.
+(over Bluetooth or on its USB cable) by switching it to driver mode (it then reports the
+button as private keys), and on the Basilisk V3 X over Bluetooth by asking the mouse to turn
+it into an F20 key.
 
 The clearest example of one that stays out of reach is the **Basilisk's multi-function
 trigger** (the third side button), which ships assigned to **Razer Hypershift**. Hypershift is

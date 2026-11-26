@@ -134,19 +134,25 @@ expect rough edges until 1.0.
 - **The Cobra HyperSpeed's DPI button on its USB cable.** Plugged in by cable (0x00DA), the
   DPI button takes the same actions and gestures as over Bluetooth, through the same driver
   mode, set up, checked and given back the same way. Over USB the mode is command `00 84` to
-  read and `00 04` to set (`03 00` driver, `00 00` normal) on the mouse's control interface.
-  On a real Cobra by cable it was written, read back, still set seconds later, and put back to
-  normal the same way. Nothing is written to the button's entry over USB, so DPI Cycle
-  (default) is the firmware's, and every other choice, a mouse button or a shortcut included,
-  is MacRazer MX's and needs Accessibility and Input Monitoring. The keys are watched on the
-  one interface of the mouse that declares reports 4 and 5, matched by Razer's vendor and the
-  mouse's own product id, so a Razer keyboard, which declares the same reports, is never
-  opened. DPI Cycle in driver mode sets the next stage's DPI, then the stage table, and reads
-  it back. Which keys the button sends over the cable hasn't been seen yet: the app assumes
-  the Bluetooth ones (`0x52` short, `0xD2` long), and the gesture trace now logs that
-  interface's reports 4 and 5 (`HIDREPORT`), any other report there only when it holds F13 to
-  F20, so one press shows whether they match. The 2.4 GHz dongle (0x00DB) isn't covered:
-  nothing has been tried on it.
+  read and `00 04` to set (`03 00` driver, `00 00` normal) on the mouse's control interface,
+  in the classic 90-byte report with transaction id `0x1f`. On a real Cobra by cable it was
+  written, answered with status 02, read back as `03 00` and still set seconds later, and put
+  back to normal the same way. Tried on that mouse with macOS 27.2.1: a short press, a long
+  press and hold and swipe all work, the button reports the same private keys as over
+  Bluetooth (`0x52` short, `0xD2` long), the trace showed no other code, and the mode stayed
+  engaged across the 30-second re-checks. Nothing is written to the button's entry over USB,
+  so DPI Cycle (default) is the firmware's, and every other choice, a mouse button or a
+  shortcut included, is MacRazer MX's and needs Accessibility and Input Monitoring. The keys
+  are watched on the one interface of the mouse that declares reports 4 and 5, matched by
+  Razer's vendor and the mouse's own product id, so a Razer keyboard, which declares the same
+  reports, is never opened. DPI Cycle in driver mode sets the next stage's DPI, then the
+  stage table, and reads it back. The gesture trace logs that interface's reports 4 and 5
+  (`HIDREPORT`), any other report there only when it holds F13 to F20, and names a key that
+  is neither expected code. Not covered and not tried: the 2.4 GHz dongle (0x00DB). Not
+  verified: what happens to driver mode when the cable is unplugged and the mouse moves to
+  the dongle, sleep and wake on the cable, and whether the "DPI Cycle (default)" label is
+  right on the cable if another function was written to the button over Bluetooth, since the
+  button's entry can't be read over USB.
 - **A gesture trace for bug reports.** The hidden `gestureDebugLog` default records the gesture
   holds, F20 timing and pointer movement, and now also the mouse's raw HID reports
   (`HIDREPORT`), the GATT characteristics and unsolicited Bluetooth notifications, read-only
@@ -192,7 +198,14 @@ expect rough edges until 1.0.
   means something: over Bluetooth the Cobra HyperSpeed reports about 125 times a second. The
   two switches it uses are hidden defaults that act without a relaunch, record only numbers,
   and can't stay on: the busy main thread ends after its run and is cleared at every launch,
-  and each CPU loop ends by itself. Not yet run with a real mouse.
+  and each CPU loop ends by itself. First real run: a Cobra HyperSpeed on its cable at about
+  900 to 1000 drags a second, 40-second runs, an 11-core Apple silicon Mac on macOS 27.2.
+  With no load the delay's p50 was 0.08 to 0.10 ms, the worst p95 2.08 ms and the longest
+  9.43 ms. With every core busy (22 loops) p50 was 0.05 to 0.09 ms, the worst p95 0.22 ms and
+  the longest 8.99 ms. With the main thread blocked 20 ms in every 50 the worst p95 was
+  19.5 ms and the longest 22.9 ms. No stutter showed in Blender in any run. One run of each,
+  so the numbers are indicative. The script has not been run through `shellcheck`, which
+  isn't installed on that Mac.
 
 ### Changed
 - **MacRazer MX: a fork with its own identity.** The app is now "MacRazer MX", with the bundle
