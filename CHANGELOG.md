@@ -27,23 +27,27 @@ expect rough edges until 1.0.
   dock swipe events, so the Spaces transition, Mission Control or App Exposé follows the
   pointer while the button is held, and the Dock finishes it or snaps it back when you let go.
   After a 12 point dead zone the stronger axis is locked. The direction follows your slots:
-  moving towards the slot that holds Space Left goes to the Space on the left. Moving back
-  past the start goes into the opposite slot's swipe only when that is the same swipe the
-  other way, and otherwise stops at the start. Letting go sends the end with the hand's
-  velocity, so a flick finishes a short swipe, and cancels when the pointer was coming back.
-  The end is sent again after 0.2 s and 0.5 s in case the Dock misses it, and a hold that
-  ends early cancels an open swipe. A custom shortcut, a media key or a mouse click in a slot
-  still fires once at 50 points. App Exposé follows the pointer only while its trackpad gesture
-  is on (System Settings › Trackpad › More Gestures, off out of the box), as the Dock ignores
-  the swipe otherwise; then it is the ⌃↓ shortcut, fired once at 50 points. With the default
-  slots the desktop moves with the hand, and a swipe up taken back down stops at the start
-  rather than opening Launchpad. On macOS 27, which ignores these event fields, the four
-  presets stay keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), which have to be on in System Settings ›
-  Keyboard › Keyboard Shortcuts › Mission Control. The event format is undocumented macOS
-  behaviour, learned from Mac Mouse Fix (credited in NOTICE.md) and written independently.
-  Confirmed on a real mouse on macOS 26.3: the Spaces animation follows the pointer for
-  horizontal swipes and a vertical swipe was driven; App Exposé as a swipe did nothing there
-  with its trackpad gesture off. The constants have not been tuned.
+  moving towards the slot that holds Space Left goes to the Space on the left. Moving back past
+  the start goes into the opposite slot's swipe only when that is the same swipe the other way,
+  and otherwise stops at the start. Letting go sends the end with the hand's velocity, so a
+  flick finishes a short swipe, and cancels when the pointer was coming back. The end is sent
+  again after 0.2 s and 0.5 s in case the Dock misses it, and a hold that ends early cancels an
+  open swipe. A custom shortcut, a media key or a mouse click in a slot still fires once at 50
+  points. App Exposé follows the pointer only while its trackpad gesture is on (System Settings
+  › Trackpad › More Gestures, off out of the box), as the Dock ignores the swipe otherwise;
+  then it is the ⌃↓ shortcut, fired once at 50 points. With the default slots the desktop moves
+  with the hand, and a swipe up taken back down stops at the start rather than opening
+  Launchpad. macOS 27 ignores these event fields, so there each frame goes out as one event
+  with the swipe attached as an IOHIDEvent, through private IOKit and SkyLight calls looked up
+  at run time, and signed by the Natural scrolling setting so it still goes the way of your
+  slots. This macOS 27 method has not been tried on a real Mac yet. If one of its calls is
+  missing, the four presets stay keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), which have to be on in
+  System Settings › Keyboard › Keyboard Shortcuts › Mission Control. The event formats are
+  undocumented macOS behaviour, learned from Mac Mouse Fix, the macOS 27 sign from OpenLogi
+  (both credited in NOTICE.md), and written independently. Confirmed on a real mouse on macOS
+  26.3: the Spaces animation follows the pointer for horizontal swipes and a vertical swipe was
+  driven; App Exposé as a swipe did nothing there with its trackpad gesture off. The constants
+  have not been tuned.
 - **An App Exposé ⌃↓ shortcut preset.** It's in the shortcut list of every button.
 - **The DPI button can be remapped on the Cobra HyperSpeed over Bluetooth.** Until now only the
   Basilisk V3 X HyperSpeed had it. The DPI button can take any action, a gesture included, or

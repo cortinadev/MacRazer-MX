@@ -588,10 +588,16 @@ described here.
    hold starts (`Scale.current()`). The Spaces count comes from a private window server call,
    `CGSCopyManagedDisplaySpaces` (with `CGSMainConnectionID`), looked up with `dlsym` in
    `ManagedSpaces` so a macOS without it only loses the count.
-  - **Event format** (`DockSwipe.events(for:userData:)`, pure). Each frame is two CGEvents, both
-   tagged with `userData` (`ButtonRemapper.magic`) so the tap skips them. The first is
-   event type 30 (`swipeEventType`) with gesture type 23 (field 110, the dock swipe
-   `IOHIDEventType`); the phase (`Phase`: began 1, changed 2, ended 4, cancelled 8) in
+  - **Method** (`DockSwipe.Method`, `DockSwipe.method`, worked out once). macOS 26 and earlier
+   take the CGEvent fields below (`eventFields`); macOS 27 and later ignore them and take an
+   attached IOHIDEvent (`attachedHIDEvent`, below), but only when every private call it needs
+   resolves (`DockSwipe.AttachedEvent.missingSymbol`). The pure
+   `method(majorVersion:missingSymbol:)` decides, and asks for the symbols only on 27 or later,
+   so an earlier macOS never looks them up. `DockSwipe.isSupported` is `method != nil`.
+  - **Event format, macOS 26 and earlier** (`DockSwipe.events(for:userData:)`, pure). Each frame
+   is two CGEvents, both tagged with `userData` (`ButtonRemapper.magic`) so the tap skips them.
+   The first is event type 30 (`swipeEventType`) with gesture type 23 (field 110, the dock
+   swipe `IOHIDEventType`); the phase (`Phase`: began 1, changed 2, ended 4, cancelled 8) in
    fields 132 and 134; the kind (`Kind`: horizontal 1, vertical 2) in fields 123 and 165 and,
    as the 32-bit float with those bits, in 119 and 139; the progress as a double in 124 and as
    float bits in integer field 135; field 136 (inverted from device) 1 for vertical and 0 for
@@ -599,16 +605,44 @@ described here.
    33231, whose meaning is unknown and which is copied because it costs nothing. The second
    event is type 29 (`gestureEventType`) with field 41 alone. The field numbers are
    `CGEventField` raw values and none of this is public API.
-  - **Posting** (`DockSwipePoster`, main thread, session tap). Under load the Dock can miss an
-   end and leave the desktop stuck between two Spaces, so each end goes out again after 0.2 s
-   and 0.5 s (`endRepeats`); the next swipe's `began`, or another end, stops the repeats still
-   waiting. `ButtonRemapper` keeps the last frame of an open swipe (`openDockSwipe`) and
-   `gestureHold`'s `didSet` cancels it on every reset that ends a hold, so the Dock is never left
-   halfway; the ends that finish a swipe send theirs first.
-  - **macOS 27.** It stopped reading these fields (it wants an IOHIDEvent attached through
-   private SkyLight calls), so `DockSwipe.isSupported` is false there, `DockSwipeOutput.system`
-   returns nil, no tracker is made, and the four presets are the keyboard shortcuts above,
-   firing once at 50 points.
+  - **Event format, macOS 27 and later** (`DockSwipe.HIDPayload`, pure, and
+   `DockSwipe.AttachedEvent`). Each frame is one CGEvent: type 30 (field 55) and the
+   `userData` tag, nothing else of the old format, no type 29 event. Attached to it is an
+   IOHIDEvent of type 23 (kIOHIDEventTypeDockSwipe) with the phase in its event flags
+   (`phase << 24`), the kind as its motion (field `0x170001`), flavor 3
+   (kIOHIDGestureFlavorDockPrimary, field `0x170005`) and the progress as a double (field
+   `0x170002`, kept by IOKit in 16.16 fixed point). On `ended` and `cancelled` it has a child
+   IOHIDEvent of type 9 (velocity) with the velocity in X and Y (`0x90000`, `0x90001`). The
+   field numbers are Apple's, from IOHIDFamily's open-source IOHIDEventTypes.h. The progress and
+   the velocity are signed for macOS 27 (`HIDPayload.orientation`): flipped while Natural
+   scrolling is on (`com.apple.swipescrolldirection` in the global domain, on when absent,
+   `DockGestures.naturalScrolling`), kept while it is off, so the swipe goes the same way as
+   on macOS 26 and follows the slots. The poster reads the setting as each swipe begins, so one
+   swipe keeps one sign. The calls are `IOHIDEventCreate`, `IOHIDEventSetEventFlags`,
+   `IOHIDEventSetIntegerValue`, `IOHIDEventSetDoubleValue` and `IOHIDEventAppendEvent` from
+   IOKit and `SLEventSetIOHIDEvent` from SkyLight, opened with `dlopen` and looked up with
+   `dlsym` once. Ownership: IOHIDEventCreate is a Create-rule call, so each IOHIDEvent made is
+   released by `event(for:userData:)`; the parent retains its velocity child; and
+   SLEventSetIOHIDEvent keeps a copy in the CGEvent (measured on macOS 27.2.1), so the CGEvent
+   owns all a frame needs and nothing leaks per frame. The CGEvent's fields are written
+   before the attach: written after it, a field didn't keep its value. The facts come from Mac
+   Mouse Fix's macOS 27 path and OpenLogi's hardware-tested sign (NOTICE.md); the code is this
+   project's own.
+  - **Posting** (`DockSwipePoster`, main thread, session tap, with the `method` it was given).
+   Under load the Dock can miss an end and leave the desktop stuck between two Spaces, so each
+   end goes out again after 0.2 s and 0.5 s (`endRepeats`), with either method; the next
+   swipe's `began`, or another end, stops the repeats still waiting. `ButtonRemapper` keeps the
+   last frame of an open swipe (`openDockSwipe`) and `gestureHold`'s `didSet` cancels it on
+   every reset that ends a hold, so the Dock is never left halfway; the ends that finish a swipe
+   send theirs first.
+  - **macOS 27 without the calls.** When one of the private calls is missing,
+   `DockSwipe.method` is nil, `DockSwipe.isSupported` is false, `DockSwipeOutput.system` returns
+   nil, no tracker is made, and the four presets are the keyboard shortcuts above, firing once
+   at 50 points. The gesture trace says which method is in use when the poster is made
+   (`SWIPE method: ...`), or which call was missing (`SWIPE method: none, ...`); with the
+   attached method it also logs each swipe's `began`, `ended` and `cancelled` as sent
+   (`SWIPE attached ...`, with the signed progress, the velocity and the Natural scrolling
+   setting). The macOS 27 method has not yet been tried on a real Mac by this project.
   - **App Exposé needs the Dock's trackpad gesture.** The Dock ignores an App Exposé swipe while
    System Settings › Trackpad › More Gestures › App Exposé is off, as it is out of the box
    (`showAppExposeGestureEnabled` in `com.apple.dock`). So `dockSwipeTracker(for:)` asks
@@ -622,7 +656,9 @@ described here.
   - **Hardware.** Confirmed on a real mouse on macOS 26.3: the Spaces animation follows the
    pointer for horizontal swipes, and a vertical swipe was driven. App Exposé as a swipe did
    nothing there with its trackpad gesture off, hence the fallback above. The constants (the
-   scale, the dead zone) have not been tuned.
+   scale, the dead zone) have not been tuned. Not yet tried on macOS 27, where the attached
+   method's sign, its velocity's unit and whether the 1/240 s frame interval and the repeated
+   ends still suit the Dock are what a real Mac has to confirm.
 - **A gesture's click re-posts the button** (`postMouseClick`, tagged so it passes the tap), so
  it fires at release. A gesture button therefore can't be held to drag.
 - **UI.** `RemapView.gestureEditor` lists the slots (`ButtonRemapper.gestureSlots(of:)`: Click,
@@ -658,6 +694,10 @@ described here.
    - `PRIVKEY down|up <code>`, `PRIVKEY watch ...` and `PRIVKEY <code> ignored`: the private
      keys as they arrive and why one was ignored (`DpiPrivateKeyWatcher`, `ButtonRemapper`).
    - `DPI cycle ...`: the stage a software DPI cycle steps to.
+   - `SWIPE method: ...`: which dock swipe method the poster uses, once as it is made, or
+     `SWIPE method: none, <call> did not resolve, ...` when macOS 27 lacks a private call; and
+     with the attached method, `SWIPE attached began|ended|cancelled ...` with the progress and
+     velocity as signed for macOS 27 and the Natural scrolling setting (`DockSwipePoster`).
    The HID watch needs **Input Monitoring**, so relaunch after granting it. It exists because
    nothing outside the app can see what its tap receives. The flag is read once at launch.
    (An earlier build had a `gestureDebugDeviceMode` key that wrote the device mode from the
@@ -668,7 +708,10 @@ described here.
  `handle(type:event:)` with
  synthetic `CGEvent`s and the `actionEmitter` hook that records actions instead of posting them.
  `DockSwipeTests` (the preset-to-swipe match, the tracker's dead zone, axis lock, sign, clamp,
- end versus cancel and velocity, the scale, the event fields, the poster's repeated end) and
+ end versus cancel and velocity, the scale, the event fields, the poster's repeated end, the
+ method by macOS version, the attached payload and its sign by Natural scrolling, and, where
+ this Mac has the private calls, the attached IOHIDEvent read back and the poster sending one
+ event a frame; those skip on a Mac without the calls, and nothing is posted) and
  `InteractiveSwipeTests` (the same through the tap with a recording `DockSwipeOutput` and a
  clock the test moves: the swipe following a hold, other actions still firing once, no swipe
  without dock swipes, resets cancelling, a hold of the DPI button ending with its release, and
@@ -1366,7 +1409,7 @@ that path draws the content but needs an explicit size, since there is no window
 | `ColorPickerPage.swift` | Inline hue/sat colour wheel page + shared `BackButton`. |
 | `ButtonRemapper.swift` | CGEvent tap, action model (`RemapAction`, `GestureBindings`, `GestureSlot`), presets, gesture holds, the DPI button (F20 bridge on the Basilisk V3 X, private keys and driver mode on the Cobra), persistence, Accessibility. |
 | `GestureDebugLog.swift` | Hidden `gestureDebugLog` default: a trace of gesture holds, F20 timing, pointer deltas, the mouse's HID reports (`GestureDebugHIDWatch`, needs Input Monitoring), the GATT characteristics, unsolicited Bluetooth notifications, read-only probes at connect, device-mode changes and private-key events in `~/Library/Logs/MacRazer MX/gesture.log`; never which key a keyboard typed (fork). |
-| `DockSwipe.swift` | The trackpad's dock swipe from a mouse: the event format (`DockSwipe`), `SystemSwipe` and `SystemSwipeSlots`, the pure `DockSwipeTracker`, `DockSwipeOutput` and `DockSwipePoster`. Mission Control, App Exposé and Spaces follow the pointer in a gesture; off on macOS 27 (fork). |
+| `DockSwipe.swift` | The trackpad's dock swipe from a mouse: the event format (`DockSwipe`), `SystemSwipe` and `SystemSwipeSlots`, the pure `DockSwipeTracker`, `DockSwipeOutput` and `DockSwipePoster`. Mission Control, App Exposé and Spaces follow the pointer in a gesture: CGEvent fields on macOS 26 and earlier, an attached IOHIDEvent on macOS 27 (fork). |
 | `GestureRecognizer.swift` | `GestureDirection` and the pure `GestureRecognizer`: net movement of one hold to at most one swipe (fork). |
 | `RemapView.swift` | Button-config UI (inline + window), gesture editor, DPI button section, key recorder. |
 | `RemapWindowController.swift` | Standalone window host for the remap UI. |
@@ -1427,7 +1470,7 @@ Tests added by the fork, in `Tests/MacRazerTests/`:
 | `DpiButtonGestureTests.swift` | A gesture on the DPI button of a mouse using F20 (the Basilisk V3 X), driven by F20 and pointer moves. |
 | `DpiButtonPrivateKeyTests.swift` | The Cobra's DPI button in driver mode: report 4 parsing and the tracker, report 5's notifications, a gesture held on the long key, the short key as Click (None does nothing, DPI Cycle cycles once), DPI Cycle in a direction and inert elsewhere, other actions, resets, the watcher and its retry, what driver mode needs and when the permissions are looked at again, a new gesture and a saved one, the editor's choices and status texts. |
 | `DpiDriverModeTests.swift` | When driver mode is read, written, retried and restored (`DpiDriverModeBook`), the settling checks and the notification checks after a wake, a disconnect dropping a pending restore, the Cobra's sleep and wake trace replayed, `BluetoothDevice.setDeviceMode` with a mouse made of closures, and the error text. |
-| `DockSwipeTests.swift` | Dock swipes alone: which presets are system swipes, the tracker's dead zone, axis lock, sign, clamp, end versus cancel and velocity, the scale, the event fields, the poster's repeated end. |
+| `DockSwipeTests.swift` | Dock swipes alone: which presets are system swipes, the tracker's dead zone, axis lock, sign, clamp, end versus cancel and velocity, the scale, the event fields, the poster's repeated end, the method by macOS version, the macOS 27 attached IOHIDEvent and its sign. |
 | `InteractiveSwipeTests.swift` | Interactive swipes through `ButtonRemapper.handle`: following a hold, other actions firing once, resets cancelling, and a swipe ended by the DPI button's release. |
 | `DpiCycleSoftwareBridgeTests.swift` | The DPI button's saved action and entry: confirmation and restore gating, the Cobra over Bluetooth only, the safe write path, error text. |
 | `ForkIdentityTests.swift` | Bundle ID and name everywhere they are written, the "MacRazer MX" data folder, no Worker, updates off, links to the fork. Fails if an upstream merge brings upstream's values back. |
