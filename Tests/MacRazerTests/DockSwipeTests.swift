@@ -628,4 +628,94 @@ final class DockSwipeTests: XCTestCase {
                        "the next swipe reads the setting again: now off, sign kept")
         XCTAssertEqual(poster.repeatTimers, [], "its start stopped the end's repeats")
     }
+
+    /// macOS 26 and earlier keep the fields method as it was: its poster never asks for
+    /// Natural scrolling, a preferences read at every swipe that it has no use for, and its
+    /// events carry the tracker's progress and velocity whatever the setting says.
+    func testTheFieldsMethodNeverAsksForNaturalScrolling() {
+        let sent = Sent()
+        var asked = 0
+        let poster = DockSwipePoster(userData: 7, method: .eventFields,
+                                     naturalScrolling: { asked += 1; return true },
+                                     send: { sent.events.append($0) })
+        poster.post(DockSwipe.Frame(kind: .horizontal, phase: .began, progress: -0.25))
+        poster.post(DockSwipe.Frame(kind: .horizontal, phase: .changed, progress: -0.5))
+        poster.post(DockSwipe.Frame(kind: .horizontal, phase: .ended, progress: -0.5, velocity: -1))
+        XCTAssertEqual(asked, 0)
+        XCTAssertEqual(sent.events.map(\.type.rawValue), [30, 29, 30, 29, 30, 29])
+        XCTAssertEqual(sent.events[2].getDoubleValueField(field(124)), -0.5, "not flipped")
+        XCTAssertEqual(sent.events[4].getDoubleValueField(field(129)), -1, "nor the velocity")
+    }
+
+    /// While Natural scrolling is on, an attached end flips its velocity child together with
+    /// its progress: flipped apart, they disagree and the Dock rebounds as the swipe lets go.
+    /// Read back from the event itself, not only the payload. Skips on a Mac without the calls.
+    func testAnAttachedEndFlipsItsVelocityWithItsProgress() throws {
+        let frame = DockSwipe.Frame(kind: .horizontal, phase: .ended, progress: -0.75, velocity: -1.5)
+        let (_, hid) = try attachedEvent(DockSwipe.HIDPayload(frame, naturalScrolling: true), userData: 0)
+        XCTAssertEqual(hid.phase, 4, "ended")
+        XCTAssertEqual(hid.integers[DockSwipe.HIDPayload.motionField], 1, "horizontal")
+        XCTAssertEqual(try XCTUnwrap(hid.doubles[DockSwipe.HIDPayload.progressField]), 0.75, accuracy: 1.0 / 65536)
+        let velocity = try XCTUnwrap(hid.children.first)
+        for field in DockSwipe.HIDPayload.velocityFields {
+            XCTAssertEqual(try XCTUnwrap(velocity.doubles[field]), 1.5, accuracy: 1.0 / 65536, "flipped with it")
+        }
+    }
+
+    /// Every reset of a hold cancels its swipe (`ButtonRemapper.gestureHold`), with no velocity
+    /// of its own. With the attached method that cancel keeps the sign the swipe began with,
+    /// whatever Natural scrolling says by then, so the Dock snaps back the way it came, and it
+    /// goes out again like any end. Skips on a Mac without the calls.
+    func testAnAttachedCancelKeepsTheSignTheSwipeBeganWith() throws {
+        if let missing = DockSwipe.AttachedEvent.missingSymbol {
+            throw XCTSkip("this Mac lacks \(missing), which the attached method needs")
+        }
+        guard let reader = HIDReader() else { throw XCTSkip("this Mac lacks a call that reads an attached IOHIDEvent") }
+        let sent = Sent()
+        var natural = true
+        let poster = DockSwipePoster(userData: 7, method: .attachedHIDEvent, naturalScrolling: { natural },
+                                     send: { sent.events.append($0) })
+        poster.post(DockSwipe.Frame(kind: .vertical, phase: .began, progress: -0.2))
+        natural = false
+        poster.post(DockSwipe.Frame(kind: .vertical, phase: .cancelled, progress: -0.3))
+        let cancel = try XCTUnwrap(reader.read(try XCTUnwrap(sent.events.last), integers: [DockSwipe.HIDPayload.motionField],
+                                               doubles: [DockSwipe.HIDPayload.progressField]))
+        XCTAssertEqual(cancel.phase, 8, "cancelled")
+        XCTAssertEqual(cancel.integers[DockSwipe.HIDPayload.motionField], 2, "vertical")
+        XCTAssertEqual(try XCTUnwrap(cancel.doubles[DockSwipe.HIDPayload.progressField]), 0.3, accuracy: 1.0 / 65536,
+                       "flipped, as the swipe began with Natural scrolling on")
+        XCTAssertEqual(cancel.children.count, 1)
+        XCTAssertEqual(cancel.children.first?.doubles[DockSwipe.HIDPayload.velocityFields[0]], 0, "no speed to go on")
+        XCTAssertEqual(poster.repeatTimers.count, DockSwipePoster.endRepeats.count)
+    }
+
+    /// The attached method makes an IOHIDEvent every frame, and a second one at the end, at up
+    /// to 240 frames a second while a button is held: one that isn't released (about 150 bytes
+    /// each) piles up for as long as the app runs, and one released once too often crashes it.
+    /// Built and dropped many times, the heap stays where it was, so the CGEvent alone owns what
+    /// it carries. Nothing is posted. Skips on a Mac without the calls.
+    func testAttachedEventsLeaveNothingBehind() throws {
+        if let missing = DockSwipe.AttachedEvent.missingSymbol {
+            throw XCTSkip("this Mac lacks \(missing), which the attached method needs")
+        }
+        func heapInUse() -> Int {
+            var stats = malloc_statistics_t()
+            malloc_zone_statistics(nil, &stats)
+            return stats.size_in_use
+        }
+        let count = 20_000
+        let payloads = [
+            DockSwipe.HIDPayload(DockSwipe.Frame(kind: .horizontal, phase: .changed, progress: 0.3), naturalScrolling: true),
+            DockSwipe.HIDPayload(DockSwipe.Frame(kind: .vertical, phase: .ended, progress: 0.3, velocity: 1.5),
+                                 naturalScrolling: true),
+        ]
+        for payload in payloads {
+            XCTAssertNotNil(DockSwipe.AttachedEvent.event(for: payload, userData: 7), "events are made at all")
+            for _ in 0..<1000 { autoreleasepool { _ = DockSwipe.AttachedEvent.event(for: payload, userData: 7) } }
+            let before = heapInUse()
+            for _ in 0..<count { autoreleasepool { _ = DockSwipe.AttachedEvent.event(for: payload, userData: 7) } }
+            let grown = heapInUse() - before
+            XCTAssertLessThan(grown, count * 16, "\(grown) bytes for \(count) events, phase \(payload.flags >> 24)")
+        }
+    }
 }
