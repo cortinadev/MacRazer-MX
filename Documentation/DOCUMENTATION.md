@@ -642,7 +642,8 @@ described here.
    (`SWIPE method: ...`), or which call was missing (`SWIPE method: none, ...`); with the
    attached method it also logs each swipe's `began`, `ended` and `cancelled` as sent
    (`SWIPE attached ...`, with the signed progress, the velocity and the Natural scrolling
-   setting). The macOS 27 method has not yet been tried on a real Mac by this project.
+   setting). The macOS 27 method has been tried on a real Mac: macOS 27.2.1 with a Cobra
+   HyperSpeed over Bluetooth, where the Spaces and Mission Control swipes follow the pointer.
   - **App Exposé needs the Dock's trackpad gesture.** The Dock ignores an App Exposé swipe while
    System Settings › Trackpad › More Gestures › App Exposé is off, as it is out of the box
    (`showAppExposeGestureEnabled` in `com.apple.dock`). So `dockSwipeTracker(for:)` asks
@@ -656,9 +657,20 @@ described here.
   - **Hardware.** Confirmed on a real mouse on macOS 26.3: the Spaces animation follows the
    pointer for horizontal swipes, and a vertical swipe was driven. App Exposé as a swipe did
    nothing there with its trackpad gesture off, hence the fallback above. The constants (the
-   scale, the dead zone) have not been tuned. Not yet tried on macOS 27, where the attached
-   method's sign, its velocity's unit and whether the 1/240 s frame interval and the repeated
-   ends still suit the Dock are what a real Mac has to confirm.
+   scale, the dead zone) have not been tuned. On macOS 27.2.1 (Cobra HyperSpeed over Bluetooth)
+   the Spaces and Mission Control swipes follow the pointer with the attached method. Not yet
+   tried on macOS 27: App Exposé as a swipe with its trackpad gesture on, and Natural scrolling
+   turned off. An independent review measured no leak building 200,000 attached events.
+  - **Turning it off** (`ButtonRemapper.systemSwipesFollowPointer`, `RemapView`'s checkbox titled
+   `followPointerToggleTitle`, "Mission Control and Spaces follow the pointer"). On by default.
+   Off, `dockSwipeTracker(for:)` returns nil, so no tracker is made and the four presets are
+   the keyboard shortcuts their slots hold, fired once at 50 points like any other action, for
+   a mouse button's hold and the DPI button's long press alike. One global setting: saved in the
+   defaults key `systemSwipesFollowPointerKey` (`gestureSystemSwipesFollowPointer`), not per
+   mouse and not in profiles; absent reads as on. Holds read it as they start, so a change
+   sets `gestureHold` to nil, which ends the hold and cancels an open swipe. The checkbox shows
+   only `if DockSwipe.isSupported`, and the editor's explanation goes by
+   `systemSwipesFollowPointerHere` (`dockSwipes != nil` and the setting on).
 - **A gesture's click re-posts the button** (`postMouseClick`, tagged so it passes the tap), so
  it fires at release. A gesture button therefore can't be held to drag.
 - **UI.** `RemapView.gestureEditor` lists the slots (`ButtonRemapper.gestureSlots(of:)`: Click,
@@ -709,13 +721,17 @@ described here.
  synthetic `CGEvent`s and the `actionEmitter` hook that records actions instead of posting them.
  `DockSwipeTests` (the preset-to-swipe match, the tracker's dead zone, axis lock, sign, clamp,
  end versus cancel and velocity, the scale, the event fields, the poster's repeated end, the
- method by macOS version, the attached payload and its sign by Natural scrolling, and, where
- this Mac has the private calls, the attached IOHIDEvent read back and the poster sending one
- event a frame; those skip on a Mac without the calls, and nothing is posted) and
+ method by macOS version, the attached payload and its sign by Natural scrolling, and the
+ attached IOHIDEvent read back and the poster sending one event a frame; those run only where
+ the app uses that method (macOS 27 and later with the calls present, `skipUnlessAttachedMethod`)
+ and skip elsewhere, and nothing is posted),
  `InteractiveSwipeTests` (the same through the tap with a recording `DockSwipeOutput` and a
  clock the test moves: the swipe following a hold, other actions still firing once, no swipe
  without dock swipes, resets cancelling, a hold of the DPI button ending with its release, and
- its Hold firing only when no swipe began).
+ its Hold firing only when no swipe began) and `SystemSwipesFollowPointerTests` (the setting:
+ on out of the box, each preset firing its shortcut once at 50 points when off for a mouse
+ button and for the Cobra's long press, turning it off mid-swipe cancelling the swipe and
+ mid-hold ending the hold without firing, the saved key being global, and the editor's text).
 
 ### 6.3.3 The DPI button: F20 bridge and driver mode, `ButtonRemapper.swift` + `DpiDriverMode.swift` + `DpiPrivateKeys.swift` + `BLEProtocol.swift` + `BluetoothDevice.swift`
 
@@ -850,7 +866,10 @@ a repeated frame changes nothing.
    (`ButtonRemapper.reopenApp`): `AppRelaunch.openNewInstance` of the bundle, and once the new
    instance runs, `NSApp.terminate`, the same path as Quit, so `applicationWillTerminate`
    restores driver mode first. A failed open quits nothing and the page says to quit and
-   reopen by hand (`reopenFailed`). The gesture editor lists Hold after Click for this button
+   reopen by hand (`reopenFailed`). The first time `updatePermissionRecheck` finds Input
+   Monitoring is what the button is missing, `ButtonRemapper.askForInputMonitoring()` asks macOS
+   for it (`IOHIDRequestAccess`), so that macOS lists the app with a switch; the Input
+   Monitoring button calls it too. See §7 for what that did on one Mac. The gesture editor lists Hold after Click for this button
    only (`gestureSlots(of:)`). Its menus start with None and DPI Cycle as separate choices
    (`gestureSlotLeadingChoices`), in every slot, Hold included; no other button, and no mouse
    without private keys, offers DPI Cycle.
@@ -1284,7 +1303,7 @@ hides the setting.
 
 | Permission | Why | How |
 |---|---|---|
-| **Input Monitoring** | Razer mice enumerate as keyboard/mouse HID; macOS gates opening them. Also needed to see the DPI button: its F20 key through the tap (Basilisk V3 X) and its private keys in driver mode (Cobra, `DpiPrivateKeyWatcher`, §6.3.3). Without it the Cobra's DPI button keeps cycling DPI in the firmware; granted while the app runs, it takes effect once MacRazer MX is reopened (seen on macOS 26.3), which the Buttons page says and offers a button for. | Requested at launch via `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)`; in-app banner + settings link. |
+| **Input Monitoring** | Razer mice enumerate as keyboard/mouse HID; macOS gates opening them. Also needed to see the DPI button: its F20 key through the tap (Basilisk V3 X) and its private keys in driver mode (Cobra, `DpiPrivateKeyWatcher`, §6.3.3). Without it the Cobra's DPI button keeps cycling DPI in the firmware; granted while the app runs, it takes effect once MacRazer MX is reopened (seen on macOS 26.3), which the Buttons page says and offers a button for. | Requested at launch via `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)`; in-app banner + settings link. Also asked once a run, the first time it is what the DPI button is missing (`ButtonRemapper.askForInputMonitoring`), so macOS lists the app with a switch. On macOS 27.2.1 with an ad-hoc signed build, after a `tccutil reset`, the app still did not appear in the list and had to be added with the + button; the cause is not established. |
 | **Accessibility** | The `CGEvent` tap for button remapping, gestures and scroll reversal. A DPI button action on the Cobra needs it together with Input Monitoring. | `AXIsProcessTrustedWithOptions`; Open Settings / Re-check in the relevant controls. |
 | **Bluetooth** | A mouse on Bluetooth is reached through CoreBluetooth. | Asked the first time such a mouse is found (`NSBluetoothAlwaysUsageDescription`). |
 
@@ -1470,8 +1489,9 @@ Tests added by the fork, in `Tests/MacRazerTests/`:
 | `DpiButtonGestureTests.swift` | A gesture on the DPI button of a mouse using F20 (the Basilisk V3 X), driven by F20 and pointer moves. |
 | `DpiButtonPrivateKeyTests.swift` | The Cobra's DPI button in driver mode: report 4 parsing and the tracker, report 5's notifications, a gesture held on the long key, the short key as Click (None does nothing, DPI Cycle cycles once), DPI Cycle in a direction and inert elsewhere, other actions, resets, the watcher and its retry, what driver mode needs and when the permissions are looked at again, a new gesture and a saved one, the editor's choices and status texts. |
 | `DpiDriverModeTests.swift` | When driver mode is read, written, retried and restored (`DpiDriverModeBook`), the settling checks and the notification checks after a wake, a disconnect dropping a pending restore, the Cobra's sleep and wake trace replayed, `BluetoothDevice.setDeviceMode` with a mouse made of closures, and the error text. |
-| `DockSwipeTests.swift` | Dock swipes alone: which presets are system swipes, the tracker's dead zone, axis lock, sign, clamp, end versus cancel and velocity, the scale, the event fields, the poster's repeated end, the method by macOS version, the macOS 27 attached IOHIDEvent and its sign. |
+| `DockSwipeTests.swift` | Dock swipes alone: which presets are system swipes, the tracker's dead zone, axis lock, sign, clamp, end versus cancel and velocity, the scale, the event fields, the poster's repeated end, the method by macOS version, the macOS 27 attached IOHIDEvent and its sign (those tests skip where the app does not use that method). |
 | `InteractiveSwipeTests.swift` | Interactive swipes through `ButtonRemapper.handle`: following a hold, other actions firing once, resets cancelling, and a swipe ended by the DPI button's release. |
+| `SystemSwipesFollowPointerTests.swift` | The setting that turns the following swipes off (`systemSwipesFollowPointer`): the default, each preset as a shortcut once at 50 points for a mouse button and the Cobra's long press, a change cancelling a swipe or ending a hold, the global saved key, the editor's text. |
 | `DpiCycleSoftwareBridgeTests.swift` | The DPI button's saved action and entry: confirmation and restore gating, the Cobra over Bluetooth only, the safe write path, error text. |
 | `ForkIdentityTests.swift` | Bundle ID and name everywhere they are written, the "MacRazer MX" data folder, no Worker, updates off, links to the fork. Fails if an upstream merge brings upstream's values back. |
 

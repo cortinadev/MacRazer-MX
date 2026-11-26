@@ -40,14 +40,25 @@ expect rough edges until 1.0.
   Launchpad. macOS 27 ignores these event fields, so there each frame goes out as one event
   with the swipe attached as an IOHIDEvent, through private IOKit and SkyLight calls looked up
   at run time, and signed by the Natural scrolling setting so it still goes the way of your
-  slots. This macOS 27 method has not been tried on a real Mac yet. If one of its calls is
+  slots. Confirmed on macOS 27.2.1 with a Cobra HyperSpeed over Bluetooth: the Spaces and
+  Mission Control swipes follow the pointer with this method. If one of its calls is
   missing, the four presets stay keyboard shortcuts (⌃↑ ⌃↓ ⌃← ⌃→), which have to be on in
   System Settings › Keyboard › Keyboard Shortcuts › Mission Control. The event formats are
   undocumented macOS behaviour, learned from Mac Mouse Fix, the macOS 27 sign from OpenLogi
   (both credited in NOTICE.md), and written independently. Confirmed on a real mouse on macOS
   26.3: the Spaces animation follows the pointer for horizontal swipes and a vertical swipe was
-  driven; App Exposé as a swipe did nothing there with its trackpad gesture off. The constants
-  have not been tuned.
+  driven; App Exposé as a swipe did nothing there with its trackpad gesture off. Not tried on
+  macOS 27: App Exposé as a swipe with its trackpad gesture on, and Natural scrolling turned
+  off. The attached-event tests run only where the app uses that method (macOS 27 and later
+  with the calls present) and skip elsewhere. An independent review measured no leak building
+  200,000 attached events. The constants have not been tuned.
+- **A setting to turn off the swipes that follow the pointer.** The gesture editor has a
+  checkbox, "Mission Control and Spaces follow the pointer", on by default. Off, in a gesture
+  Mission Control, App Exposé and the two Space presets fire once as their keyboard shortcuts
+  when the pointer has moved 50 points, like any other action, for mouse buttons and for the
+  DPI button's long press alike. It is one setting for the app, not per mouse and not part of
+  a profile. Changing it during a hold ends the hold and cancels an open swipe. The checkbox
+  shows only where macOS can do the interactive swipes.
 - **An App Exposé ⌃↓ shortcut preset.** It's in the shortcut list of every button.
 - **The DPI button can be remapped on the Cobra HyperSpeed over Bluetooth.** Until now only the
   Basilisk V3 X HyperSpeed had it. The DPI button can take any action, a gesture included, or
@@ -92,7 +103,11 @@ expect rough edges until 1.0.
   Buttons page says to turn it on in System Settings and then reopen MacRazer MX, and has a
   Reopen MacRazer MX button, which quits the way Quit does (driver mode is given back first)
   and opens the app again. The same shows if macOS says Input Monitoring is granted but the
-  mouse still won't open. Driver mode is volatile, so MacRazer MX sets it on each new
+  mouse still won't open. The first time the app finds Input Monitoring is what the DPI button
+  is missing, it asks macOS for it, so that macOS lists the app with a switch. On a Mac with
+  macOS 27.2.1 and an ad-hoc signed build, after a `tccutil reset`, the app still did not
+  appear in the list and had to be added with the + button; the cause is not established.
+  Driver mode is volatile, so MacRazer MX sets it on each new
   connection and after a wake (reading first), reads it about every 30 seconds to put it back
   if the mouse fell out of it, and tries a failed change again at most 3 times per connection.
   After waking, the Cobra accepts driver mode and reads it back, then resets itself to normal

@@ -35,9 +35,9 @@
 > HyperSpeed over Bluetooth, the DPI button's remap has been tried, and so have the mouse's
 > driver mode and the two keys it reports the button as, first with the trace and then through
 > the finished feature (details [below](#the-dpi-button), including what is still untried).
-> Gestures that follow the pointer have been tried on a real mouse on macOS 26.3, not yet on
-> macOS 27, which takes them another way (see [Gesture mode](#gesture-mode)); the rest of
-> gesture mode has not.
+> Gestures that follow the pointer have been tried on a real mouse on macOS 26.3 and, with a
+> Cobra HyperSpeed over Bluetooth, on macOS 27.2.1, which takes them another way (see
+> [Gesture mode](#gesture-mode)); the rest of gesture mode has not.
 
 A native menu bar app to control Razer mice on macOS. Razer does ship a Synapse for Mac now,
 but its [supported-device list](https://mysupport.razer.com/app/answers/detail/a_id/14809/~/razer-synapse-for-mac-supported-and-compatible-devices)
@@ -154,8 +154,8 @@ nothing here has been re-verified for MacRazer MX. Its two additions, gestures a
 button remap, are not in this table. The DPI button remap, and the driver mode its gestures
 use, have been tried in part on one real Cobra HyperSpeed over Bluetooth (see
 [The DPI button](#the-dpi-button)). Gestures that follow the
-pointer have been tried on a real mouse on macOS 26.3, not yet on macOS 27, and are otherwise
-covered by unit tests.
+pointer have been tried on a real mouse on macOS 26.3 and on macOS 27.2.1 (Cobra HyperSpeed over
+Bluetooth), and are otherwise covered by unit tests.
 
 "Verified" below means someone ran the CLI probes or the in-app test against the mouse and
 posted the output, not that the protocol tables say it should work. Where nobody has, the row
@@ -339,8 +339,8 @@ moving and the **Click** action runs.
     IOHIDEvent attached to the event instead, so MacRazer MX sends it that way there, through
     private IOKit and SkyLight calls it looks up at run time. macOS 27 reads that swipe's sign
     by the Natural scrolling setting, which MacRazer MX reads as each swipe begins, so the
-    direction still follows your slots. **This macOS 27 method has not yet been tried on a
-    real Mac** by this project. If one of those calls is missing, the four presets go back to
+    direction still follows your slots. **Tried on macOS 27.2.1**, with a Cobra HyperSpeed
+    over Bluetooth: the Spaces and Mission Control swipes follow the pointer. If one of those calls is missing, the four presets go back to
     sending the keyboard shortcuts (⌃↑, ⌃↓, ⌃←, ⌃→). They then fire once at 50 points like any
     other action, and have to be switched on in System Settings › Keyboard › Keyboard
     Shortcuts › Mission Control.
@@ -350,7 +350,17 @@ moving and the **Click** action runs.
     independently here; no code from either is used.
   - **Tested on real hardware**, on macOS 26.3: the Spaces animation follows the pointer for
     horizontal swipes, and a vertical swipe was driven. App Exposé as a swipe did nothing there
-    with its trackpad gesture off, hence the fallback above. Not yet tried on macOS 27.
+    with its trackpad gesture off, hence the fallback above. On macOS 27.2.1 the Spaces and
+    Mission Control swipes follow the pointer too. Not yet tried on macOS 27: App Exposé as a
+    swipe with its trackpad gesture on, and Natural scrolling turned off. The attached-event
+    tests run only on macOS 27 and later with the calls present, and skip elsewhere; an
+    independent review measured no leak building 200,000 attached events.
+  - **Turning it off.** The gesture editor has a checkbox, "Mission Control and Spaces follow
+    the pointer", on by default and shown only where macOS can do these swipes. Off, in a
+    gesture Mission Control, App Exposé and the two Space presets fire once as their keyboard
+    shortcuts when the pointer has moved 50 points, like any other action, for mouse buttons
+    and for the DPI button's long press alike. It is one setting for the app, not per mouse and
+    not part of a profile. Changing it during a hold ends the hold and cancels an open swipe.
 - **The pointer is not frozen** while you hold the button; it moves as usual. The button's own
   press, drag events and release are swallowed, so the app under the pointer doesn't see them.
 - **Only the extra buttons** (the ones macOS reports as "other" mouse buttons) can be gestures,
@@ -622,7 +632,11 @@ MacRazer and may not match this fork's windows exactly.
   It is also what lets the app see the DPI button's F20 key (Basilisk V3 X) and its private
   keys in driver mode (Cobra). Without it, the Cobra's DPI button keeps cycling DPI in the
   firmware. Granted while the app runs, it takes effect once MacRazer MX is reopened; the
-  Buttons page says so and has a button that reopens it.
+  Buttons page says so and has a button that reopens it. The first time the app finds this is
+  what the DPI button is missing, it asks macOS for the permission so that macOS lists the app
+  with a switch. On a Mac with macOS 27.2.1 and an ad-hoc signed build, after a `tccutil reset`,
+  the app still did not appear in the list and had to be added with the + button; the cause is
+  not established.
 - **Accessibility** is required for button remapping, gestures and scroll reversal (the event
   tap). A DPI button action on the Cobra needs it and Input Monitoring together. The remap screen has a button to open the right settings pane.
 - **Bluetooth**, the first time it finds a mouse on Bluetooth.
