@@ -1571,6 +1571,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
 
     /// What `refreshDpiDriverModeWant` last worked out, for `updatePermissionRecheck`.
     private var lastDpiDriverModeNeed = DpiDriverModeNeed.none
+    /// macOS has been asked for Input Monitoring in this run (`askForInputMonitoring`).
+    private var askedForInputMonitoring = false
     /// Calls `refreshAccessibility` every `permissionRecheckInterval` while `waitsForPermission`;
     /// nil otherwise, so nothing polls while no permission is awaited.
     private var permissionRecheckTimer: Timer?
@@ -1603,7 +1605,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// Settings, with a switch to turn on; an app that only looks (`IOHIDCheckAccess`) is never
     /// listed, and the user is left to add it by hand with the + button. The first time it
     /// also shows macOS's own prompt; once answered, asking again changes nothing. Called once
-    /// when the DPI button starts waiting for the permission, and from the page's button.
+    /// a run, when Input Monitoring first turns out to be what the DPI button is missing, and
+    /// from the page's button.
     static func askForInputMonitoring() {
         _ = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
     }
@@ -1615,6 +1618,14 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         let waits = lastDpiDriverModeNeed.rechecksPermissions(paused: remappingPaused)
         if waitsForPermission != waits { waitsForPermission = waits }
         guard schedulesPermissionRechecks, !RenderOptions.isActive else { return }
+        // Asked the first time Input Monitoring is what's missing, whatever the timer is doing:
+        // it is usually already running for Accessibility, which comes first, and asking only
+        // when it started left the app unlisted (seen on macOS 27).
+        if lastDpiDriverModeNeed == .inputMonitoring, !askedForInputMonitoring {
+            askedForInputMonitoring = true
+            GestureDebugLog.log("PERMISSIONS asking macOS for Input Monitoring")
+            Self.askForInputMonitoring()
+        }
         if waits, permissionRecheckTimer == nil {
             let timer = Timer(timeInterval: Self.permissionRecheckInterval, repeats: true) { [weak self] _ in
                 self?.refreshAccessibility(prompt: false)
@@ -1624,7 +1635,6 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             permissionRecheckTimer = timer
             GestureDebugLog.log("PERMISSIONS DPI button waits for \(lastDpiDriverModeNeed), looking every "
                                 + "\(Int(Self.permissionRecheckInterval)) s")
-            if lastDpiDriverModeNeed == .inputMonitoring { Self.askForInputMonitoring() }
         } else if !waits, let timer = permissionRecheckTimer {
             timer.invalidate()
             permissionRecheckTimer = nil
