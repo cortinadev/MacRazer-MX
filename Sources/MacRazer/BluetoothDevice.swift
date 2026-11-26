@@ -15,7 +15,7 @@ import CoreBluetooth
 /// for a product id the registry lists as `.bluetooth`. That pre-check runs on IOHID, so
 /// nobody without such a mouse ever creates a `CBCentralManager` or sees the Bluetooth
 /// permission prompt.
-final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
+final class BluetoothDevice: NSObject, RazerTransport, DeviceModeLink, @unchecked Sendable {
     let productID: Int
     let productName: String
     let locationID = 0
@@ -333,55 +333,13 @@ final class BluetoothDevice: NSObject, RazerTransport, @unchecked Sendable {
     }
 
     /// Sends the device-mode write once (`BLEProtocol.deviceModeRequest`). Throws unless the
-    /// mouse answers it with success.
+    /// mouse answers it with success. A change goes through `setDeviceMode` (`DeviceModeLink`),
+    /// which reads first and reads back, the same as over USB.
     func writeDeviceMode(_ mode: BLEProtocol.DeviceMode) throws {
         let request = BLEProtocol.deviceModeRequest(mode)
         let reply = lenientExchange(request)
         GestureDebugLog.log("DEVMODE write 01 02 00 00 [\(GestureDebugLog.hex(request.payload))] -> \(reply.text)")
         _ = try reply.payload()
-    }
-
-    /// Puts the mouse in `mode` (`setDeviceMode(_:readFirst:read:write:)`).
-    @discardableResult
-    func setDeviceMode(_ mode: BLEProtocol.DeviceMode, readFirst: Bool,
-                       beforeWrite: () -> Void = {}) throws -> DeviceModeChange {
-        try Self.setDeviceMode(mode, readFirst: readFirst, read: { try readDeviceMode() }, write: { mode in
-            beforeWrite()
-            try writeDeviceMode(mode)
-        })
-    }
-
-    /// What `setDeviceMode` did.
-    enum DeviceModeChange: Equatable, Sendable {
-        /// The read before showed the mouse already in the mode, so nothing was written.
-        case alreadySet
-        /// The mode was written once and read back.
-        case written
-    }
-
-    /// The device-mode change, apart from the device so tests can drive it: `read` reads the
-    /// mode (`readDeviceMode`), `write` sends the write (`writeDeviceMode`).
-    ///
-    /// With `readFirst` the mode is read before anything is written, and a mouse already in
-    /// `mode` is left alone; a read that fails then throws `unreadable`, and nothing was
-    /// written. The write is sent once. Then the mode is read back, and anything but `mode`
-    /// throws `notReadBack`; no second write follows. Without `readFirst` (going back to normal
-    /// mode, which is harmless to write again) the write goes first.
-    static func setDeviceMode(_ mode: BLEProtocol.DeviceMode, readFirst: Bool,
-                              read: () throws -> UInt16,
-                              write: (BLEProtocol.DeviceMode) throws -> Void) throws -> DeviceModeChange {
-        if readFirst {
-            guard let current = try? read() else { throw BLEProtocol.DeviceModeError.unreadable }
-            if current == mode.value { return .alreadySet }
-        }
-        do {
-            try write(mode)
-        } catch {
-            throw BLEProtocol.DeviceModeError.notTaken
-        }
-        let back = try? read()
-        guard back == mode.value else { throw BLEProtocol.DeviceModeError.notReadBack(back) }
-        return .written
     }
 
     // MARK: - Exchanges sent once (device mode, gesture trace)

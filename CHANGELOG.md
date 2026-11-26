@@ -68,8 +68,8 @@ expect rough edges until 1.0.
   and MacRazer MX turns it into the action, so an F20 from a keyboard is caught too while one
   is set, and Input Monitoring may be needed. On the Cobra it works through the mouse's driver
   mode, below. Tested on a real Cobra over Bluetooth: it accepts the entry, and the read before
-  the write and the read back work. The USB cable and the 2.4 GHz dongle aren't supported for
-  this.
+  the write and the read back work. The 2.4 GHz dongle isn't supported for this, and the USB
+  cable only through driver mode (see the entry on the cable below).
 - **On the Cobra, a DPI button gesture is hold and swipe.** A Cobra's DPI button is a tap/hold
   button: a short press cycles DPI and a long press is a function only Synapse knows, so in
   normal mode whatever is in entry 0x60 only fires when a short press is released, and a hold
@@ -131,6 +131,22 @@ expect rough edges until 1.0.
   the side-button gesture. The device-mode key and the private-key report format were learned
   from the documentation of OpenRazer, OpenSnek, OpenSynapse and ergo-control; no code from
   them is used.
+- **The Cobra HyperSpeed's DPI button on its USB cable.** Plugged in by cable (0x00DA), the
+  DPI button takes the same actions and gestures as over Bluetooth, through the same driver
+  mode, set up, checked and given back the same way. Over USB the mode is command `00 84` to
+  read and `00 04` to set (`03 00` driver, `00 00` normal) on the mouse's control interface.
+  On a real Cobra by cable it was written, read back, still set seconds later, and put back to
+  normal the same way. Nothing is written to the button's entry over USB, so DPI Cycle
+  (default) is the firmware's, and every other choice, a mouse button or a shortcut included,
+  is MacRazer MX's and needs Accessibility and Input Monitoring. The keys are watched on the
+  one interface of the mouse that declares reports 4 and 5, matched by Razer's vendor and the
+  mouse's own product id, so a Razer keyboard, which declares the same reports, is never
+  opened. DPI Cycle in driver mode sets the next stage's DPI, then the stage table, and reads
+  it back. Which keys the button sends over the cable hasn't been seen yet: the app assumes
+  the Bluetooth ones (`0x52` short, `0xD2` long), and the gesture trace now logs that
+  interface's reports 4 and 5 (`HIDREPORT`), any other report there only when it holds F13 to
+  F20, so one press shows whether they match. The 2.4 GHz dongle (0x00DB) isn't covered:
+  nothing has been tried on it.
 - **A gesture trace for bug reports.** The hidden `gestureDebugLog` default records the gesture
   holds, F20 timing and pointer movement, and now also the mouse's raw HID reports
   (`HIDREPORT`), the GATT characteristics and unsolicited Bluetooth notifications, read-only

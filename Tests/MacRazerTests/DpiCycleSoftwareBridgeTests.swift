@@ -90,9 +90,10 @@ final class DpiCycleSoftwareBridgeTests: XCTestCase {
 
     /// The gate is the capability, not the model: the Cobra over Bluetooth saves a software
     /// action as the Basilisk does, but never through F20 (its private keys carry it), so F20
-    /// read from it is never confirmed as the bridge. Over its dongle or cable there is no
-    /// Bluetooth control channel, so nothing is saved there.
-    func testTheCobraOverBluetoothBindsItsDpiButtonAndItsUSBLinksDont() {
+    /// read from it is never confirmed as the bridge. On its cable there is no entry to bind,
+    /// but driver mode reaches the button, so an action is saved there too and F20 is never its
+    /// bridge either. Over its dongle neither has been tried, so nothing is saved there.
+    func testTheCobraOverBluetoothBindsItsDpiButtonItsCableTakesDriverModeAndItsDongleNeither() {
         let (remapper, defaults) = remapper()
         let action = RemapAction.mediaKey(code: 16, name: "Play / Pause")
         remapper.setActiveDevice("COBRA-BT", deviceID: 0x00DC)
@@ -104,14 +105,23 @@ final class DpiCycleSoftwareBridgeTests: XCTestCase {
         remapper.confirmDpiBridge(binding: .softwareBridge)
         XCTAssertFalse(remapper.dpiBridgeBindingConfirmed, "F20 is never the Cobra's bridge")
 
-        for pid in [0x00DB, 0x00DA] {
-            remapper.setActiveDevice("COBRA-USB-\(pid)", deviceID: pid)
-            XCTAssertFalse(remapper.supportsDpiButtonBinding, "PID \(pid)")
-            XCTAssertFalse(remapper.supportsDpiPrivateKeys, "PID \(pid)")
-            remapper.saveDpiSoftwareAction(action)
-            XCTAssertNil(remapper.dpiCycleSoftwareAction, "PID \(pid)")
-            XCTAssertNil(defaults.data(forKey: "dpiCycleSoftwareAction-COBRA-USB-\(pid)"), "PID \(pid)")
-        }
+        remapper.setActiveDevice("COBRA-CABLE", deviceID: 0x00DA)
+        XCTAssertFalse(remapper.supportsDpiButtonBinding, "no entry is written over USB")
+        XCTAssertTrue(remapper.supportsDpiPrivateKeys)
+        XCTAssertTrue(remapper.offersDpiButton)
+        remapper.saveDpiSoftwareAction(action)
+        XCTAssertEqual(remapper.dpiCycleSoftwareAction, action)
+        XCTAssertNotNil(defaults.data(forKey: "dpiCycleSoftwareAction-COBRA-CABLE"))
+        remapper.confirmDpiBridge(binding: .softwareBridge)
+        XCTAssertFalse(remapper.dpiBridgeBindingConfirmed, "F20 is never the cable's bridge")
+
+        remapper.setActiveDevice("COBRA-DONGLE", deviceID: 0x00DB)
+        XCTAssertFalse(remapper.supportsDpiButtonBinding)
+        XCTAssertFalse(remapper.supportsDpiPrivateKeys)
+        XCTAssertFalse(remapper.offersDpiButton)
+        remapper.saveDpiSoftwareAction(action)
+        XCTAssertNil(remapper.dpiCycleSoftwareAction)
+        XCTAssertNil(defaults.data(forKey: "dpiCycleSoftwareAction-COBRA-DONGLE"))
     }
 
     /// F20 is never written back to the Cobra, with or without a saved action: its actions go

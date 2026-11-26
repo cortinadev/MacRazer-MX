@@ -1520,8 +1520,9 @@ final class MouseController: ObservableObject, @unchecked Sendable {
 
     /// `io` only. When driver mode is read and written (`DpiDriverModeBook`).
     private var driverMode = DpiDriverModeBook()
-    /// `io` only. The connection `driverMode` is about, so a new one starts it over.
-    private weak var driverModeConnection: BluetoothDevice?
+    /// `io` only. The connection `driverMode` is about, so a new one starts it over: the
+    /// Bluetooth connection, or the HID interface opened on a cable or dongle.
+    private weak var driverModeConnection: (any DeviceModeLink)?
     /// `io` only. The plain sentence for the last change that failed.
     private var driverModeError: String?
     /// `io` only. The state last handed to the main queue, so a poll that changes nothing
@@ -1558,7 +1559,9 @@ final class MouseController: ObservableObject, @unchecked Sendable {
     }
 
     /// `io` only. Does what `driverMode` says for the open connection, if it is to a mouse with
-    /// private keys, and publishes where that leaves it. Nothing goes to any other mouse.
+    /// private keys, and publishes where that leaves it. Nothing goes to any other mouse. The
+    /// connection is Bluetooth or USB alike (`DeviceModeLink`): the Cobra HyperSpeed takes the
+    /// mode over its cable as it does over Bluetooth (`RazerCommands.getDeviceMode`).
     ///
     /// The mouse goes back to normal mode by itself when it sleeps, reconnects or is switched
     /// off and on, and MacRazer writes normal mode back when it is no longer wanted and when
@@ -1577,14 +1580,14 @@ final class MouseController: ObservableObject, @unchecked Sendable {
         // Whatever this leaves the book with, the next early check is lined up for it, and one
         // the book has dropped is called off.
         defer { scheduleDpiDriverModeEarlyCheck() }
-        guard let bluetooth = device as? BluetoothDevice,
-              RazerDevices.dpiButtonPrivateKeys(pid: bluetooth.productID) != nil else {
+        guard let link = device as? any DeviceModeLink,
+              RazerDevices.dpiButtonPrivateKeys(pid: link.productID) != nil else {
             // Another mouse, or none open: whatever was engaged was on a connection now gone.
             if driverModeConnection != nil || occasion == .wantChanged { dpiDriverModeConnectionLost() }
             return
         }
-        if driverModeConnection !== bluetooth {
-            driverModeConnection = bluetooth
+        if driverModeConnection !== link {
+            driverModeConnection = link
             dpiDriverModeConnectionChanged()
         }
         let now = ProcessInfo.processInfo.systemUptime
@@ -1603,8 +1606,8 @@ final class MouseController: ObservableObject, @unchecked Sendable {
             let what = step == .engage ? "engage" : Self.dpiDriverModeCheckName(early)
             let done = step == .engage ? "engaged" : early == nil ? "checked" : what
             do {
-                let change = try bluetooth.setDeviceMode(.driver, readFirst: true,
-                                                         beforeWrite: { self.driverModeMayHaveSet() })
+                let change = try link.setDeviceMode(.driver, readFirst: true,
+                                                    beforeWrite: { self.driverModeMayHaveSet() })
                 driverModeMayHaveSet()
                 let settling = driverMode.engaged(at: now, wrote: change == .written)
                 driverModeError = nil
@@ -1633,11 +1636,11 @@ final class MouseController: ObservableObject, @unchecked Sendable {
                 GestureDebugLog.log("DEVMODE \(what) failed (\(driverMode.failures) on this connection): \(error)")
             }
         case .restore:
-            restoreNormalMode(on: bluetooth, now: now)
+            restoreNormalMode(on: link, now: now)
         case .checkLeftover:
             // A background read too: it gives way to a tap, and the next poll does it.
             if userWorkPending { return }
-            checkForLeftoverDriverMode(on: bluetooth, now: now)
+            checkForLeftoverDriverMode(on: link, now: now)
         }
         publishDriverMode()
     }
@@ -1646,10 +1649,10 @@ final class MouseController: ObservableObject, @unchecked Sendable {
     /// if it reads as driver mode (an earlier run crashed or was killed with the mouse in it)
     /// writes normal mode back. A read that goes unanswered is tried again like any change
     /// (`DpiDriverModeBook.failed`), and nothing is written.
-    private func checkForLeftoverDriverMode(on bluetooth: BluetoothDevice, now: TimeInterval) {
+    private func checkForLeftoverDriverMode(on link: any DeviceModeLink, now: TimeInterval) {
         let mode: UInt16
         do {
-            mode = try bluetooth.readDeviceMode()
+            mode = try link.readDeviceMode()
         } catch {
             driverMode.failed(at: now)
             GestureDebugLog.log("DEVMODE leftover check unanswered (\(driverMode.failures) on this connection): \(error)")
@@ -1658,13 +1661,13 @@ final class MouseController: ObservableObject, @unchecked Sendable {
         guard driverMode.leftoverRead(mode) else { return }
         GestureDebugLog.log("DEVMODE found in driver mode with none wanted, left by an earlier run: restoring")
         setDriverModeMaybeSet(true)
-        restoreNormalMode(on: bluetooth, now: now)
+        restoreNormalMode(on: link, now: now)
     }
 
     /// `io` only. Writes normal mode and reads it back.
-    private func restoreNormalMode(on bluetooth: BluetoothDevice, now: TimeInterval) {
+    private func restoreNormalMode(on link: any DeviceModeLink, now: TimeInterval) {
         do {
-            try bluetooth.setDeviceMode(.normal, readFirst: false)
+            try link.setDeviceMode(.normal, readFirst: false)
             driverMode.restored()
             driverModeError = nil
             GestureDebugLog.log("DEVMODE restored normal mode")
@@ -1801,12 +1804,12 @@ final class MouseController: ObservableObject, @unchecked Sendable {
         userCommand { [weak self] in
             defer { done.signal() }
             guard let self else { return }
-            guard let bluetooth = self.device as? BluetoothDevice,
-                  RazerDevices.dpiButtonPrivateKeys(pid: bluetooth.productID) != nil else {
+            guard let link = self.device as? any DeviceModeLink,
+                  RazerDevices.dpiButtonPrivateKeys(pid: link.productID) != nil else {
                 GestureDebugLog.log("DEVMODE quit: no connection to the mouse to write normal mode on")
                 return
             }
-            self.restoreNormalMode(on: bluetooth, now: ProcessInfo.processInfo.systemUptime)
+            self.restoreNormalMode(on: link, now: ProcessInfo.processInfo.systemUptime)
         }
         if done.wait(timeout: .now() + Self.driverModeRestoreTimeout) == .timedOut {
             GestureDebugLog.log("DEVMODE quit: gave up waiting for the device queue; normal mode may not have been written")
@@ -1835,7 +1838,8 @@ final class MouseController: ObservableObject, @unchecked Sendable {
     /// A short press of the DPI button in driver mode, where the firmware no longer cycles DPI
     /// itself: the next stage, after the last the first, as the button does in normal mode.
     /// The stage table is read fresh, so a stage chosen anywhere else since is where it goes on
-    /// from, and the write is read back (`BluetoothDevice.setDpiStages`). Main thread.
+    /// from, and the write is read back (`BluetoothDevice.setDpiStages`, or over USB
+    /// `cycleUSBStage`). Main thread.
     func cycleDpiStage() {
         guard !RenderOptions.isActive else { return }
         userCommand { [weak self] in
@@ -1848,28 +1852,60 @@ final class MouseController: ObservableObject, @unchecked Sendable {
                 return
             }
             do {
-                guard let bluetooth = try self.ensureDevice() as? BluetoothDevice,
-                      RazerDevices.dpiButtonPrivateKeys(pid: bluetooth.productID) != nil else {
+                let device = try self.ensureDevice()
+                guard RazerDevices.dpiButtonPrivateKeys(pid: device.productID) != nil else {
                     throw HIDDevice.HIDError.notSupported
                 }
-                guard let next = try bluetooth.readDpiStages().nextStage() else { return }
-                // The mouse tells of the change (report 5, code 02): it is this one, not the
+                // The mouse may tell of the change (report 5, code 02): it is this one, not the
                 // firmware cycling DPI with driver mode gone (`dpiDriverModeNoticed`).
                 self.noteOwnDpiChange()
                 defer { self.noteOwnDpiChange() }
-                try bluetooth.setDpiStages(next)
-                GestureDebugLog.log("DPI cycle: stage \(next.active + 1) of \(next.values.count), \(next.values[next.active]) DPI")
+                let stages: [Int]
+                let active: Int
+                if let bluetooth = device as? BluetoothDevice {
+                    guard let next = try bluetooth.readDpiStages().nextStage() else { return }
+                    try bluetooth.setDpiStages(next)
+                    stages = next.values
+                    active = next.active
+                } else {
+                    guard let back = try Self.cycleUSBStage(send: device.sendWithRetry),
+                          let index = back.activeIndex else { return }
+                    stages = back.values
+                    active = index
+                }
+                GestureDebugLog.log("DPI cycle: stage \(active + 1) of \(stages.count), \(stages[active]) DPI")
                 // As a press on the mouse shows up at the next read, at once.
                 self.publish {
-                    self.update(\.dpiStages, next.values)
-                    self.update(\.activeDpiStage, next.active)
-                    self.update(\.dpi, next.values[next.active])
+                    self.update(\.dpiStages, stages)
+                    self.update(\.activeDpiStage, active)
+                    self.update(\.dpi, stages[active])
                 }
             } catch {
                 GestureDebugLog.log("DPI cycle failed: \(error)")
                 self.publish { self.lastWriteFailure = Date() }
             }
         }
+    }
+
+    /// The software DPI cycle over a cable or dongle, apart from the device so tests can drive
+    /// it. Over USB the current DPI is apart from the stage table, and the button in normal mode
+    /// moves both: so the DPI of the next stage is set first, which is what the hand feels, and
+    /// then the table's active stage, so the chips and the firmware's own cycle (once MacRazer
+    /// quits) carry on from there. The table is read back, and an active stage other than the
+    /// one written throws. Nil with nowhere to step to (one stage), and nothing is written.
+    static func cycleUSBStage(send: (RazerReport) throws -> RazerReport) throws -> RazerCommands.DPIStageTable? {
+        guard let table = RazerCommands.parseDPIStageTable(try send(RazerCommands.getDPIStages())) else {
+            throw HIDDevice.HIDError.badResponse
+        }
+        guard let next = table.nextStage(), let index = next.activeIndex else { return nil }
+        let dpi = UInt16(max(100, min(next.values[index], 45000)))
+        _ = try send(RazerCommands.setDPI(x: dpi, y: dpi))
+        _ = try send(RazerCommands.setDPIStages(next))
+        guard let back = RazerCommands.parseDPIStageTable(try send(RazerCommands.getDPIStages())),
+              back.activeID == next.activeID, back.values.count == next.values.count else {
+            throw HIDDevice.HIDError.badResponse
+        }
+        return back
     }
 
     /// The connected mouse is one whose side buttons `checkSideButtons` reads: on Bluetooth and

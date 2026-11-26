@@ -21,11 +21,15 @@ import Foundation
 /// (`BLEProtocol.traceProbeKeys`, lines `BLEREAD <key> -> <status, header, payload>`). The
 /// trace itself only reads: it changes nothing on the mouse. It never records what is typed:
 /// keyboards aren't watched, and the mouse's own keyboard report is logged only when the keys
-/// in it are F13 to F20 (`GestureDebugReportFilter`).
+/// in it are F13 to F20 (`GestureDebugReportFilter`). On a cable or dongle, the keyboard
+/// interface of a mouse with private keys is watched for its reports 4 and 5, matched by
+/// Razer's vendor and the mouse's own product id, and any other report there is held to the
+/// same F13 to F20 rule (`GestureDebugHIDWatch.watchesPrivateKeyInterface`).
 ///
 /// It also records what MacRazer itself does with the DPI button on a mouse that reports it as
 /// private keys (`RazerDevices.dpiButtonPrivateKeys`): each read and write of the device mode
-/// and why (`DEVMODE` lines, from `MouseController` and `BluetoothDevice`, among them the
+/// and why (`DEVMODE` lines, from `MouseController`, `BluetoothDevice` and on a cable
+/// `HIDDevice`, which marks its own "over USB", among them the
 /// settling re-checks after an engage, the mouse's notifications that called for a re-check or
 /// were MacRazer's own DPI change, and a restore dropped because its connection went), the
 /// private keys as they go down and up (`PRIVKEY` lines, `DpiPrivateKeyWatcher`), and the
@@ -109,6 +113,21 @@ enum GestureDebugReportFilter {
     /// F13 to F20, what a remapped mouse button types (F20 is the DPI button's bridge).
     static let loggableKeys: ClosedRange<UInt8> = 0x68...0x6F
 
+    /// On the keyboard interface of a mouse with private keys on a cable or dongle
+    /// (`PrivateKeyInterface`), only these are logged whole: the private keys (report 4) and
+    /// the mouse's notifications (5).
+    static let privateKeyReportIDs: Set<Int> = [PrivateKeyReport.reportID, MouseNoticeReport.reportID]
+    /// Every other report id there is held to the keyboard rule, whatever its descriptor says:
+    /// report 1 is a keyboard, and 2 and 3 (consumer and system control) are not private keys
+    /// either.
+    static let privateKeyInterfaceKeyboardIDs: Set<Int> = Set(0...255).subtracting(privateKeyReportIDs)
+
+    /// The `HIDREPORT` line for a report of that interface: reports 4 and 5 whole, any other
+    /// only when it holds nothing but F13 to F20 (`line`).
+    static func privateKeyInterfaceLine(reportID: Int, bytes: [UInt8]) -> String? {
+        line(reportID: reportID, bytes: bytes, pointer: [], keyboard: privateKeyInterfaceKeyboardIDs)
+    }
+
     /// The `HIDREPORT` line for a report, or nil for a pointer report. A keyboard report is
     /// logged only when every non-zero byte after its report id is F13 to F20, modifiers
     /// included, so a release (all zeros) is logged and anything else typed is not.
@@ -169,22 +188,29 @@ enum GestureDebugHIDWatch {
         let size: Int
         let pointerIDs: Set<Int>
         let keyboardIDs: Set<Int>
+        /// The keyboard interface of a mouse with private keys on a cable or dongle: only its
+        /// reports 4 and 5 are logged whole (`GestureDebugReportFilter.privateKeyInterfaceLine`).
+        let privateKeysOnly: Bool
         var rate = GestureDebugReportFilter.RateLimit()
 
-        init(device: IOHIDDevice, name: String, size: Int, pointerIDs: Set<Int>, keyboardIDs: Set<Int>) {
+        init(device: IOHIDDevice, name: String, size: Int, pointerIDs: Set<Int>, keyboardIDs: Set<Int>,
+             privateKeysOnly: Bool = false) {
             self.device = device
             self.name = name
             self.size = size
             self.pointerIDs = pointerIDs
             self.keyboardIDs = keyboardIDs
+            self.privateKeysOnly = privateKeysOnly
             buffer = .allocate(capacity: size)
         }
 
         deinit { buffer.deallocate() }
 
         func received(reportID: Int, bytes: [UInt8]) {
-            guard let line = GestureDebugReportFilter.line(reportID: reportID, bytes: bytes,
-                                                           pointer: pointerIDs, keyboard: keyboardIDs) else { return }
+            let text = privateKeysOnly
+                ? GestureDebugReportFilter.privateKeyInterfaceLine(reportID: reportID, bytes: bytes)
+                : GestureDebugReportFilter.line(reportID: reportID, bytes: bytes, pointer: pointerIDs, keyboard: keyboardIDs)
+            guard let line = text else { return }
             let verdict = rate.admit(reportID: reportID, at: ProcessInfo.processInfo.systemUptime)
             if verdict.droppedBefore > 0 {
                 GestureDebugLog.log("HIDREPORT id=\(reportID) \(verdict.droppedBefore) more not logged "
@@ -214,16 +240,36 @@ enum GestureDebugHIDWatch {
         }
     }
 
+    /// The products whose keyboard interface the trace also watches: mice with private keys on
+    /// a cable or dongle (`RazerDevices.dpiButtonPrivateKeys`, off Bluetooth).
+    static var privateKeyUSBProducts: [Int] {
+        RazerDevices.known.filter { $0.dpiButtonPrivateKeys != nil && $0.connection != .bluetooth }.map(\.pid).sorted()
+    }
+
+    /// Whether a HID device is the one interface of a mouse with private keys on a cable or
+    /// dongle that carries them (`PrivateKeyInterface`). Its primary usage is a keyboard, so
+    /// `watches` never takes it; it is watched with every report but 4 and 5 held to the
+    /// keyboard rule (`GestureDebugReportFilter.privateKeyInterfaceLine`), and only for a
+    /// product in `privateKeyUSBProducts`, by Razer's vendor and that exact product id: no
+    /// keyboard is ever one, whatever its interfaces declare.
+    static func watchesPrivateKeyInterface(vendorID: Int, productID: Int, usagePairs: [[String: Int]]) -> Bool {
+        vendorID == Razer.vendorId && privateKeyUSBProducts.contains(productID)
+            && RazerAccessories.info(pid: productID) == nil
+            && PrivateKeyInterface.declaresPrivateKeys(usagePairs: usagePairs)
+    }
+
     /// Main thread, once. Needs Input Monitoring, which the F20 bridge and the DPI button's
     /// private keys need anyway.
     static func startIfEnabled() {
         guard GestureDebugLog.enabled, manager == nil else { return }
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
         let mouse = [kIOHIDPrimaryUsagePageKey: kHIDPage_GenericDesktop, kIOHIDPrimaryUsageKey: kHIDUsage_GD_Mouse]
-        // Narrower than `watches`, so the manager opens as little as it can; `watches` decides.
+        // Narrower than `watches`, so the manager opens as little as it can; `watches` and
+        // `watchesPrivateKeyInterface` decide.
         let matching: [[String: Int]] = [mouse.merging([kIOHIDVendorIDKey: BLEProtocol.vendorId]) { $1 }]
             + RazerDevices.bluetoothPIDs.sorted().map { [kIOHIDVendorIDKey: BLEProtocol.vendorId, kIOHIDProductIDKey: $0] }
             + [mouse.merging([kIOHIDVendorIDKey: Razer.vendorId]) { $1 }]
+            + privateKeyUSBProducts.map(PrivateKeyInterface.matching(productID:))
         IOHIDManagerSetDeviceMatchingMultiple(manager, matching as CFArray)
         IOHIDManagerRegisterDeviceMatchingCallback(manager, { _, _, _, device in
             GestureDebugHIDWatch.matched(device)
@@ -244,7 +290,9 @@ enum GestureDebugHIDWatch {
         let transport = IOHIDDeviceGetProperty(device, kIOHIDTransportKey as CFString) as? String ?? "?"
         let name = String(format: "vendor=%04x product=%04x usage=%02x:%02x transport=", vendor, product, page, usage)
             + transport
-        guard watches(vendorID: vendor, productID: product, primaryUsagePage: page, primaryUsage: usage) else {
+        let privateKeysOnly = watchesPrivateKeyInterface(vendorID: vendor, productID: product,
+                                                         usagePairs: PrivateKeyInterface.usagePairs(of: device))
+        guard privateKeysOnly || watches(vendorID: vendor, productID: product, primaryUsagePage: page, primaryUsage: usage) else {
             GestureDebugLog.log("HID watch skips \(name)")
             return
         }
@@ -256,16 +304,23 @@ enum GestureDebugHIDWatch {
             GestureDebugLog.log("HID watch matched \(name) \(opened), not watching")
             return
         }
-        let ids = reportIDs(of: device)
-        let entry = Watched(device: device, name: name, size: size, pointerIDs: ids.pointer, keyboardIDs: ids.keyboard)
+        let ids = privateKeysOnly ? (pointer: Set<Int>(), keyboard: GestureDebugReportFilter.privateKeyInterfaceKeyboardIDs)
+            : reportIDs(of: device)
+        let entry = Watched(device: device, name: name, size: size, pointerIDs: ids.pointer, keyboardIDs: ids.keyboard,
+                            privateKeysOnly: privateKeysOnly)
         IOHIDDeviceRegisterInputReportCallback(device, entry.buffer, size, { context, _, _, _, reportID, report, length in
             guard let context else { return }
             Unmanaged<Watched>.fromOpaque(context).takeUnretainedValue()
                 .received(reportID: Int(reportID), bytes: Array(UnsafeBufferPointer(start: report, count: max(0, length))))
         }, Unmanaged.passUnretained(entry).toOpaque())
         watched.append(entry)
-        GestureDebugLog.log("HID watch matched \(name) \(opened) skipping ids \(ids.pointer.sorted()), "
-                            + "F13-F20 only in ids \(ids.keyboard.sorted())")
+        if privateKeysOnly {
+            GestureDebugLog.log("HID watch matched \(name) \(opened) private keys: ids "
+                                + "\(GestureDebugReportFilter.privateKeyReportIDs.sorted()) whole, any other F13-F20 only")
+        } else {
+            GestureDebugLog.log("HID watch matched \(name) \(opened) skipping ids \(ids.pointer.sorted()), "
+                                + "F13-F20 only in ids \(ids.keyboard.sorted())")
+        }
     }
 
     private static func removed(_ device: IOHIDDevice) {

@@ -5,7 +5,7 @@ import XCTest
 @testable import MacRazer
 
 /// The DPI button's driver mode on a mouse with private keys: when it is read and written
-/// (`DpiDriverModeBook`), how one change goes (`BluetoothDevice.setDeviceMode`, driven with a
+/// (`DpiDriverModeBook`), how one change goes (`DeviceModeChange.apply`, driven with a
 /// mouse made of closures), and what the page says when it fails. Nothing here talks to a
 /// mouse: the mode is volatile and writing it changes how the real button behaves, so every
 /// rule about when it is written is checked here instead.
@@ -44,7 +44,7 @@ final class DpiDriverModeTests: XCTestCase {
     }
 
     /// A new connection, or a wake, may have lost the mode: it is engaged again at once
-    /// (`BluetoothDevice.setDeviceMode` reads first, so a mouse still in it isn't written). A
+    /// (`DeviceModeLink.setDeviceMode` reads first, so a mouse still in it isn't written). A
     /// wake keeps the connection, which may still hold driver mode, so quitting would still
     /// write normal mode back; a new connection starts in normal mode, so it has nothing to
     /// give back until it is engaged again.
@@ -652,8 +652,8 @@ final class DpiDriverModeTests: XCTestCase {
             if !ignoresWrites { self.mode = mode.value }
         }
 
-        func set(_ mode: BLEProtocol.DeviceMode, readFirst: Bool = true) throws -> BluetoothDevice.DeviceModeChange {
-            try BluetoothDevice.setDeviceMode(mode, readFirst: readFirst, read: read, write: write)
+        func set(_ mode: BLEProtocol.DeviceMode, readFirst: Bool = true) throws -> DeviceModeChange {
+            try DeviceModeChange.apply(mode, readFirst: readFirst, read: read, write: write)
         }
     }
 

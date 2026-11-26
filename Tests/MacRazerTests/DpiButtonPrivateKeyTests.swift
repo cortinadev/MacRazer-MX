@@ -286,17 +286,21 @@ final class DpiButtonPrivateKeyTests: XCTestCase {
 
     // MARK: Which mice
 
-    /// Only the Cobra over Bluetooth was seen reporting the keys and taking driver mode: the
-    /// Basilisk keeps F20, and any mouse not in the list has neither.
-    func testOnlyTheCobraOverBluetoothHasPrivateKeys() {
+    /// Only the Cobra was seen taking driver mode: over Bluetooth, where its keys were traced,
+    /// and on its cable, where the mode was written and read back and the keys are taken to be
+    /// the same. The Basilisk keeps F20, the Cobra's dongle has nothing tried, and any mouse not
+    /// in the list has neither. Over Bluetooth the button is also one MacRazer binds; on the
+    /// cable it isn't, as nothing is written to its entry there.
+    func testOnlyTheCobraOverBluetoothAndByCableHasPrivateKeys() {
         XCTAssertEqual(RazerDevices.dpiButtonPrivateKeys(pid: cobra), DpiButtonPrivateKeys(short: 0x52, long: 0xD2))
+        XCTAssertEqual(RazerDevices.dpiButtonPrivateKeys(pid: 0x00DA), .cobraHyperSpeed, "its cable")
         XCTAssertNil(RazerDevices.dpiButtonPrivateKeys(pid: basilisk))
         XCTAssertNil(RazerDevices.dpiButtonPrivateKeys(pid: 0x00DB), "its dongle")
-        XCTAssertNil(RazerDevices.dpiButtonPrivateKeys(pid: 0x00DA), "its cable")
         XCTAssertNil(RazerDevices.dpiButtonPrivateKeys(pid: 0x9999), "unknown")
+        XCTAssertEqual(RazerDevices.known.filter { $0.dpiButtonPrivateKeys != nil }.map(\.pid).sorted(), [0x00DA, 0x00DC])
         for row in RazerDevices.known where row.dpiButtonPrivateKeys != nil {
-            XCTAssertEqual(row.connection, .bluetooth, row.name)
-            XCTAssertTrue(row.supportsDpiButtonBinding, "\(row.name): only a button MacRazer binds")
+            XCTAssertEqual(row.supportsDpiButtonBinding, row.connection == .bluetooth,
+                           "\(row.name): bound over Bluetooth only")
         }
         let none = ButtonRemapper(defaults: defaults(#function))
         none.setActiveDevice(nil)

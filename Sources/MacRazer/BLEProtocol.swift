@@ -76,7 +76,7 @@ enum BLEProtocol {
     /// to the host instead, as private keys in HID input report 4
     /// (`RazerDevices.dpiButtonPrivateKeys`), and leaves acting on them to the host. Driver
     /// mode doesn't last: the mouse is back in normal mode after it sleeps, reconnects or is
-    /// switched off and on.
+    /// switched off and on. The same two values go over USB (`RazerCommands.setDeviceMode`).
     enum DeviceMode: UInt8, Equatable, Sendable {
         case normal = 0x00
         case driver = 0x03

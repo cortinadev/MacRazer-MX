@@ -178,11 +178,63 @@ struct PrivateKeyTracker: Equatable, Sendable {
     }
 }
 
+/// Which of a mouse's HID devices carry its reports 4 and 5, by link. Pure, so the rule that
+/// nothing but the mouse is opened is tested.
+///
+/// Over Bluetooth every HID device of the mouse delivers them (vendor 0x068E and its product
+/// id). On a cable or dongle only one interface does: on a Cobra HyperSpeed by cable (0x00DA)
+/// it is the third of its four, a keyboard-usage interface whose descriptor declares report 1
+/// (keyboard keys), 2 (consumer), 3 (system control), and 4 and 5 as 15-byte arrays in Generic
+/// Desktop collections of usage 0. That collection is what the match asks for, with Razer's USB
+/// vendor and the exact product id, so neither the mouse's pointer interface, which reports at
+/// the polling rate, nor any interface of another device is opened. The collection alone
+/// wouldn't do: a Huntsman V2 Tenkeyless keyboard (0x026B) declares the same one, so the
+/// product id, of a mouse the registry lists with private keys (`accepts`), is what keeps a
+/// keyboard out.
+enum PrivateKeyInterface {
+    /// The Generic Desktop usage of the collections reports 4 and 5 sit in on USB (undefined).
+    static let collectionUsage = 0x00
+
+    /// The IOHID matching for `productID`'s HID devices that carry reports 4 and 5. A product
+    /// the registry has on Bluetooth is matched as over Bluetooth; any other as over USB.
+    static func matching(productID: Int) -> [String: Int] {
+        guard RazerDevices.connection(pid: productID) != .bluetooth else {
+            return [kIOHIDVendorIDKey: BLEProtocol.vendorId, kIOHIDProductIDKey: productID]
+        }
+        return [kIOHIDVendorIDKey: Razer.vendorId, kIOHIDProductIDKey: productID,
+                kIOHIDDeviceUsagePageKey: kHIDPage_GenericDesktop, kIOHIDDeviceUsageKey: collectionUsage]
+    }
+
+    /// Whether a USB interface's `DeviceUsagePairs` include that collection.
+    static func declaresPrivateKeys(usagePairs: [[String: Int]]) -> Bool {
+        usagePairs.contains {
+            $0[kIOHIDDeviceUsagePageKey] == kHIDPage_GenericDesktop && $0[kIOHIDDeviceUsageKey] == collectionUsage
+        }
+    }
+
+    /// Whether a HID device a match handed over is one `matching(productID: wanted)` asks for,
+    /// checked again before it is opened, so a match that IOKit widened still opens nothing
+    /// else: a mouse the registry lists with private keys (no keyboard ever is), the product id
+    /// itself, and the vendor and collection of its link.
+    static func accepts(vendorID: Int, productID: Int, usagePairs: [[String: Int]], watching wanted: Int) -> Bool {
+        guard productID == wanted, RazerDevices.dpiButtonPrivateKeys(pid: wanted) != nil,
+              RazerAccessories.info(pid: wanted) == nil else { return false }
+        if RazerDevices.connection(pid: wanted) == .bluetooth { return vendorID == BLEProtocol.vendorId }
+        return vendorID == Razer.vendorId && declaresPrivateKeys(usagePairs: usagePairs)
+    }
+
+    /// The `DeviceUsagePairs` of a HID device, as `accepts` and the trace read them.
+    static func usagePairs(of device: IOHIDDevice) -> [[String: Int]] {
+        IOHIDDeviceGetProperty(device, kIOHIDDeviceUsagePairsKey as CFString) as? [[String: Int]] ?? []
+    }
+}
+
 /// Where `ButtonRemapper` gets the DPI button's private keys from. The app's is
 /// `DpiPrivateKeyWatcher`; tests hand the remapper the keys themselves.
 protocol PrivateKeySource: AnyObject {
     var isRunning: Bool { get }
-    /// Starts delivering the private keys of the Bluetooth mouse `productID`, and the
+    /// Starts delivering the private keys of the mouse `productID` (over Bluetooth, or on a
+    /// cable, `PrivateKeyInterface`), and the
     /// notifications it sends in report 5 (`MouseNotice`), on the main thread. False when it
     /// can't: Input Monitoring isn't granted, or the mouse's HID device wouldn't open. Starting
     /// again for the same mouse keeps what is running. A failure isn't kept: the next start
@@ -196,13 +248,16 @@ protocol PrivateKeySource: AnyObject {
     func canWatch(productID: Int) -> Bool
 }
 
-/// Watches HID input report 4 of one Bluetooth mouse (vendor 0x068E and its product id, so
-/// nothing of any other device) and turns it into private-key events (`PrivateKeyTracker`).
-/// Needs Input Monitoring, as every HID input read does. Only runs while the mouse is in
-/// driver mode, which is when it sends that report. Its report 5 comes through the same
-/// callbacks, and is handed on as the mouse's notifications (`MouseNoticeReport`): a sign that
-/// the firmware restarted or cycled DPI itself, and may have dropped driver mode. Both of the
-/// mouse's HID devices deliver it, so a notification usually comes twice.
+/// Watches HID input report 4 of one mouse (`PrivateKeyInterface.matching`: over Bluetooth
+/// vendor 0x068E and its product id, on a cable Razer's vendor, the product id and the one
+/// interface that declares the report, so nothing of any other device) and turns it into
+/// private-key events (`PrivateKeyTracker`). Needs Input Monitoring, as every HID input read
+/// does. Only runs while the mouse is in driver mode, which is when it sends that report. Its
+/// report 5 comes through the same callbacks, and is handed on as the mouse's notifications
+/// (`MouseNoticeReport`): a sign that the firmware restarted or cycled DPI itself, and may have
+/// dropped driver mode. Over Bluetooth both of the mouse's HID devices deliver it, so a
+/// notification usually comes twice. Any other report of that interface (on a cable, the
+/// keyboard keys a button bound to one types) is never copied or looked at.
 ///
 /// An `IOHIDManager` finds the mouse's HID devices, now and whenever macOS enumerates them
 /// again (a reconnect), and each is watched as the gesture trace watches it
@@ -260,7 +315,7 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
     }
 
     private static func matching(productID: Int) -> CFDictionary {
-        [kIOHIDVendorIDKey: BLEProtocol.vendorId, kIOHIDProductIDKey: productID] as CFDictionary
+        PrivateKeyInterface.matching(productID: productID) as CFDictionary
     }
 
     func canWatch(productID: Int) -> Bool {
@@ -269,7 +324,12 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
         IOHIDManagerSetDeviceMatching(manager, Self.matching(productID: productID))
         let managerOpen = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         defer { IOHIDManagerClose(manager, IOOptionBits(kIOHIDOptionsTypeNone)) }
-        let present = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> ?? []
+        let present = (IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> ?? []).filter { device in
+            PrivateKeyInterface.accepts(
+                vendorID: IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? Int ?? 0,
+                productID: IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int ?? 0,
+                usagePairs: PrivateKeyInterface.usagePairs(of: device), watching: productID)
+        }
         var opened = 0
         for device in present where IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess {
             IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -348,7 +408,15 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
     }
 
     private func watch(_ device: IOHIDDevice) {
-        guard isRunning, !watched.contains(where: { CFEqual($0.device, device) }) else { return }
+        guard isRunning, let productID, !watched.contains(where: { CFEqual($0.device, device) }) else { return }
+        func number(_ key: String) -> Int { IOHIDDeviceGetProperty(device, key as CFString) as? Int ?? 0 }
+        guard PrivateKeyInterface.accepts(vendorID: number(kIOHIDVendorIDKey), productID: number(kIOHIDProductIDKey),
+                                          usagePairs: PrivateKeyInterface.usagePairs(of: device),
+                                          watching: productID) else {
+            GestureDebugLog.log(String(format: "PRIVKEY watch passes over a device of vendor %04x product %04x",
+                                       number(kIOHIDVendorIDKey), number(kIOHIDProductIDKey)))
+            return
+        }
         let size = IOHIDDeviceGetProperty(device, kIOHIDMaxInputReportSizeKey as CFString) as? Int ?? 0
         let open = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone))
         guard size > 0, open == kIOReturnSuccess else {
@@ -358,8 +426,9 @@ final class DpiPrivateKeyWatcher: PrivateKeySource, @unchecked Sendable {
         nextSourceID &+= 1
         let entry = Watched(device: device, id: nextSourceID, size: size, watcher: self)
         IOHIDDeviceRegisterInputReportCallback(device, entry.buffer, size, { context, _, _, _, reportID, report, length in
-            // Pointer movement comes through here too, at the polling rate: only reports 4 and
-            // 5 are copied and looked at.
+            // Pointer movement comes through here too over Bluetooth, at the polling rate, and
+            // on a cable the interface's keyboard reports: only reports 4 and 5 are copied and
+            // looked at.
             guard let context, Int(reportID) == PrivateKeyReport.reportID
                     || Int(reportID) == MouseNoticeReport.reportID else { return }
             let entry = Unmanaged<Watched>.fromOpaque(context).takeUnretainedValue()

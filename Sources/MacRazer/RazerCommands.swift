@@ -124,6 +124,39 @@ enum RazerCommands {
         "v\(resp.arguments[0]).\(resp.arguments[1])"
     }
 
+    // --- Device mode (class 0x00, the DPI button's driver mode) ---
+    //
+    // razer_chroma_standard_{get,set}_device_mode. On a Cobra HyperSpeed by cable (0x00DA,
+    // firmware v1.0, transaction id 0x1f, control interface) the read `00 84` answered `00 00`,
+    // the write `00 04` with `03 00` answered status 02 echoing `03 00`, the read then answered
+    // `03 00` and still did seconds later, and `00 00` written the same way read back `00 00`.
+    // The same two bytes as over Bluetooth (`BLEProtocol.DeviceMode`). Written only to a mouse
+    // with `RazerDevices.dpiButtonPrivateKeys` (`HIDDevice.writeDeviceMode`).
+
+    /// get_razer_report(0x00, 0x84, 0x02). The answer's args[0] is the mode, args[1] its
+    /// parameter (`parseDeviceMode`).
+    static func getDeviceMode() -> RazerReport {
+        RazerReport(commandClass: 0x00, commandId: 0x84, dataSize: 0x02)
+    }
+
+    /// get_razer_report(0x00, 0x04, 0x02), args [mode, 0]. Built only from a `DeviceMode`, so
+    /// no other mode can be written this way.
+    static func setDeviceMode(_ mode: BLEProtocol.DeviceMode) -> RazerReport {
+        var r = RazerReport(commandClass: 0x00, commandId: 0x04, dataSize: 0x02)
+        r.arguments[0] = mode.rawValue
+        r.arguments[1] = 0x00
+        return r
+    }
+
+    /// The mode a successful answer to `getDeviceMode` or `setDeviceMode` holds, as the same
+    /// u16 a Bluetooth read gives (`BLEProtocol.parseDeviceMode`: `03 00` is 3). Nil for an
+    /// answer that isn't a success or isn't to a device-mode command.
+    static func parseDeviceMode(_ resp: RazerReport) -> UInt16? {
+        guard resp.status == RazerStatus.successful.rawValue, resp.commandClass == 0x00,
+              resp.commandId == 0x84 || resp.commandId == 0x04 else { return nil }
+        return UInt16(resp.arguments[0]) | UInt16(resp.arguments[1]) << 8
+    }
+
     /// razer_chroma_misc_get_charging_status() — command_class 0x07, command_id 0x84
     /// (confirmed against razerchromacommon.c:1067).
     static func getChargingStatus() -> RazerReport {
@@ -196,6 +229,18 @@ enum RazerCommands {
 
         /// Index into `values` of the active stage, or nil when the byte names none of them.
         var activeIndex: Int? { ids.firstIndex(of: activeID) }
+
+        /// The table with the stage after the active one active, after the last the first, as
+        /// the DPI button steps in normal mode. For MacRazer's DPI cycle in driver mode over
+        /// USB, where the firmware no longer steps it (`MouseController.cycleDpiStage`). An
+        /// active byte that names no stage steps to the first. Nil with one stage or none:
+        /// there is nowhere to go. The same rule as `BLEProtocol.DPIStageTable.nextStage()`.
+        func nextStage() -> DPIStageTable? {
+            guard ids.count > 1, ids.count == values.count else { return nil }
+            var next = self
+            next.activeID = ids[activeIndex.map { ($0 + 1) % ids.count } ?? 0]
+            return next
+        }
     }
 
     /// The whole table from a get-DPI-stages response, or nil when it's empty, too long, or

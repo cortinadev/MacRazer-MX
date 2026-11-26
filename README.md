@@ -381,7 +381,8 @@ moving and the **Click** action runs.
 Upstream can turn the **Basilisk V3 X HyperSpeed's** DPI button into another action over
 Bluetooth. MacRazer MX enables the same for the **Razer Cobra HyperSpeed over Bluetooth**, and
 lets the DPI button take any action, **Gesture…** included. It's a section of Configure Buttons
-that only appears for a mouse on Bluetooth that supports it.
+that appears for a mouse on Bluetooth that supports it, and for the Cobra HyperSpeed on its USB
+cable, where it works through driver mode alone.
 
 The two mice work differently. The Basilisk V3 X makes the button type **F20** and turns that
 into your action, as upstream does. The Cobra uses Razer's **device mode** instead, described

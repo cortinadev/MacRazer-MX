@@ -164,9 +164,14 @@ struct RemapView: View {
 
     /// The help under the DPI button's menu. On a mouse with private keys it says how MacRazer
     /// takes the button over while it runs, and gives it back, and how a gesture is made there.
-    nonisolated static func dpiButtonHelpText(privateKeys: Bool) -> String {
-        let needs = "Media, Double Click, Launchpad, Gesture and keys the mouse can't type itself need MacRazer "
-            + "running, with Accessibility and Input Monitoring on. "
+    /// Without an entry to write (`onboardEntry` false, the Cobra by cable) the mouse runs
+    /// nothing else itself, so every choice but DPI Cycle needs MacRazer.
+    nonisolated static func dpiButtonHelpText(privateKeys: Bool, onboardEntry: Bool = true) -> String {
+        let needs = onboardEntry
+            ? "Media, Double Click, Launchpad, Gesture and keys the mouse can't type itself need MacRazer "
+                + "running, with Accessibility and Input Monitoring on. "
+            : "On a cable the mouse keeps only its own DPI Cycle, so every other choice needs MacRazer "
+                + "running, with Accessibility and Input Monitoring on. "
         guard privateKeys else {
             return needs + "While one is set, the button types F20 and MacRazer turns it into the action. "
                 + "Choose DPI Cycle (default) to put the button back."
@@ -609,12 +614,15 @@ private struct SideButtonResetNotice: View {
     }
 }
 
-/// The DPI button, on a mouse that can rebind it over Bluetooth. The same menu as every other
-/// button, with the mouse's own functions added: what the mouse can do itself is written to it
+/// The DPI button, on a mouse that can rebind it over Bluetooth, or whose button driver mode
+/// reaches (`ButtonRemapper.DpiButtonSection`). The same menu as every other button. Over
+/// Bluetooth the mouse's own functions are added: what the mouse can do itself is written to it
 /// (DPI Cycle, its mouse buttons, keys it can type), and anything else is MacRazer's to carry
 /// out, through F20 or, on a mouse with private keys, through driver mode
-/// (`ButtonRemapper.dpiButtonAssignment`). The menu waits for a read of the mouse that parses,
-/// and every write reads the button again first.
+/// (`ButtonRemapper.dpiButtonAssignment`); the menu waits for a read of the mouse that parses,
+/// and every write reads the button again first. On a cable (`driverModeOnly`) nothing is read
+/// from or written to the button's entry: DPI Cycle (default) is the firmware's, and every
+/// other choice is MacRazer's, through driver mode.
 private struct DpiCycleBindingSection: View {
     @ObservedObject var controller: MouseController
     @ObservedObject var remapper: ButtonRemapper
@@ -627,35 +635,52 @@ private struct DpiCycleBindingSection: View {
         $0.buttonID != nil && $0 != .middleClick
     }
 
+    private var section: ButtonRemapper.DpiButtonSection? {
+        ButtonRemapper.dpiButtonSection(pid: controller.deviceID, bluetooth: controller.deviceIsBluetooth)
+    }
+
     private var menuLabel: String {
-        controller.dpiCycleButtonBinding.map { remapper.dpiCycleLabel(for: $0) }
+        // On a cable the firmware's DPI Cycle is all the entry holds, under any action.
+        if section == .driverModeOnly { return remapper.dpiCycleLabel(for: .dpiCycle) }
+        return controller.dpiCycleButtonBinding.map { remapper.dpiCycleLabel(for: $0) }
             ?? (controller.isUpdatingDpiCycleButton ? "Reading…" : "Read from mouse…")
     }
 
+    /// The menu can't be used yet: over Bluetooth until the entry has been read, and on a cable
+    /// while no permission lets MacRazer carry out anything and none is saved to clear.
+    private var menuDisabled: Bool {
+        guard section == .onboardEntry else {
+            return !remapper.remappingPermissionsGranted && remapper.dpiCycleSoftwareAction == nil
+        }
+        return controller.isUpdatingDpiCycleButton || controller.dpiCycleButtonBinding == nil
+    }
+
     var body: some View {
-        if controller.deviceIsBluetooth,
-           controller.deviceID.map(RazerDevices.supportsDpiButtonBinding(pid:)) == true {
+        if let section {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Text(ButtonRemapper.label(for: ButtonRemapper.dpiButton)).font(.system(size: 12, weight: .medium))
                     Spacer(minLength: 6)
-                    // None is DPI Cycle (default), which writes the button's factory function back.
+                    // None is DPI Cycle (default), which writes the button's factory function back
+                    // over Bluetooth, and on a cable gives the button back to the firmware.
                     RemapActionMenu(label: menuLabel, noneTitle: BLEProtocol.DPIButtonBinding.dpiCycle.label,
                                     onPick: { remapper.configureDpiButton($0, controller: controller) },
                                     onRecord: onRecordShortcut,
                                     onGesture: {
                                         if remapper.makeDpiGesture(controller: controller) { onGesture() }
                                     },
-                                    extraMouseChoices: Self.firmwareMouseBindings.map { binding in
-                                        RemapMenuChoice(title: binding.label) {
-                                            remapper.configureDpiCycle(binding, controller: controller)
-                                        }
-                                    },
+                                    extraMouseChoices: section == .onboardEntry
+                                        ? Self.firmwareMouseBindings.map { binding in
+                                            RemapMenuChoice(title: binding.label) {
+                                                remapper.configureDpiCycle(binding, controller: controller)
+                                            }
+                                        } : [],
                                     softwareChoicesDisabled: !remapper.remappingPermissionsGranted,
                                     width: 190)
-                    .disabled(controller.isUpdatingDpiCycleButton || controller.dpiCycleButtonBinding == nil)
+                    .disabled(menuDisabled)
                 }
-                Text(RemapView.dpiButtonHelpText(privateKeys: remapper.supportsDpiPrivateKeys))
+                Text(RemapView.dpiButtonHelpText(privateKeys: remapper.supportsDpiPrivateKeys,
+                                                 onboardEntry: section == .onboardEntry))
                     .font(.system(size: 10)).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -689,21 +714,24 @@ private struct DpiCycleBindingSection: View {
                     }
                 }
 
-                if let error = controller.dpiCycleButtonError {
-                    HStack(spacing: 8) {
-                        Text(error).font(.system(size: 10)).foregroundStyle(Color.batteryMid)
-                        Button("Retry") { controller.refreshDpiCycleButtonBinding() }.font(.system(size: 10))
+                // The entry's read and its errors are Bluetooth's: a cable has no entry to read.
+                if section == .onboardEntry {
+                    if let error = controller.dpiCycleButtonError {
+                        HStack(spacing: 8) {
+                            Text(error).font(.system(size: 10)).foregroundStyle(Color.batteryMid)
+                            Button("Retry") { controller.refreshDpiCycleButtonBinding() }.font(.system(size: 10))
+                        }
+                    } else if controller.dpiCycleButtonBinding == nil {
+                        Button("Read button assignment") { controller.refreshDpiCycleButtonBinding() }
+                            .font(.system(size: 10))
+                            .disabled(controller.isUpdatingDpiCycleButton)
                     }
-                } else if controller.dpiCycleButtonBinding == nil {
-                    Button("Read button assignment") { controller.refreshDpiCycleButtonBinding() }
-                        .font(.system(size: 10))
-                        .disabled(controller.isUpdatingDpiCycleButton)
                 }
             }
             .padding(12)
             .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
             // A read only: nothing is written until a choice is made in the menu.
-            .onAppear { controller.refreshDpiCycleButtonBinding() }
+            .onAppear { if section == .onboardEntry { controller.refreshDpiCycleButtonBinding() } }
         }
     }
 }

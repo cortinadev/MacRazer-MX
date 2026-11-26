@@ -395,17 +395,42 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// trigger, and `gestureBindings(for:)`. It has no CGEvent button number of its own.
     static let dpiButton = -1
     /// The connected mouse's DPI button can be rebound over Bluetooth
-    /// (`RazerDevices.supportsDpiButtonBinding`), and so may carry out an action of MacRazer's.
+    /// (`RazerDevices.supportsDpiButtonBinding`): its entry 0x60 is read and written, and it may
+    /// carry out an action of MacRazer's.
     var supportsDpiButtonBinding: Bool {
         activeKey != "none" && (activeDeviceID.map(RazerDevices.supportsDpiButtonBinding(pid:)) ?? false)
     }
     /// The connected mouse's DPI button keys in driver mode (`RazerDevices.dpiButtonPrivateKeys`).
-    /// Such a mouse's actions go through them, never F20: no key events are tapped for it.
+    /// Such a mouse's actions go through them, never F20: no key events are tapped for it. Over
+    /// Bluetooth such a mouse can also be rebound (the Cobra over Bluetooth); on its cable
+    /// driver mode is all there is (`dpiButtonSection`).
     var dpiPrivateKeys: DpiButtonPrivateKeys? {
-        guard supportsDpiButtonBinding else { return nil }
+        guard activeKey != "none" else { return nil }
         return activeDeviceID.flatMap(RazerDevices.dpiButtonPrivateKeys(pid:))
     }
     var supportsDpiPrivateKeys: Bool { dpiPrivateKeys != nil }
+    /// The connected mouse's DPI button can carry an action of MacRazer's, one way or the other:
+    /// what is saved for it is loaded and kept (`saveDpiSoftwareAction`).
+    var offersDpiButton: Bool { supportsDpiButtonBinding || supportsDpiPrivateKeys }
+
+    /// How the Buttons page offers the DPI button (`dpiButtonSection(pid:bluetooth:)`).
+    enum DpiButtonSection: Equatable {
+        /// Entry 0x60 is read and written over Bluetooth: the mouse's own functions are offered
+        /// beside MacRazer's actions (the Basilisk V3 X, the Cobra over Bluetooth).
+        case onboardEntry
+        /// Only driver mode reaches the button (the Cobra by cable): nothing is written to its
+        /// entry, DPI Cycle (default) is the firmware's, and every other choice is MacRazer's.
+        case driverModeOnly
+    }
+
+    /// The DPI button section for the mouse `pid` on its link, nil for none. An entry over
+    /// Bluetooth wins; private keys anywhere else are driver mode alone.
+    static func dpiButtonSection(pid: Int?, bluetooth: Bool) -> DpiButtonSection? {
+        guard let pid else { return nil }
+        if bluetooth, RazerDevices.supportsDpiButtonBinding(pid: pid) { return .onboardEntry }
+        return RazerDevices.dpiButtonPrivateKeys(pid: pid) != nil && !RazerDevices.supportsDpiButtonBinding(pid: pid)
+            ? .driverModeOnly : nil
+    }
     /// The DPI button types F20 for MacRazer's actions: a mouse that can bind it, but has no
     /// private keys (the Basilisk V3 X).
     private var usesDpiBridge: Bool { supportsDpiButtonBinding && !supportsDpiPrivateKeys }
@@ -1349,11 +1374,19 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// MacRazer does with the DPI button (nil for a firmware function, which clears any saved
     /// one). A software action needs the event tap, so without it nothing is written. On a
     /// mouse with private keys the entry already holding `binding` (DPI Cycle, under any action
-    /// of MacRazer's) isn't written again: the action is saved at once.
+    /// of MacRazer's) isn't written again: the action is saved at once. On one whose button
+    /// only driver mode reaches (`DpiButtonSection.driverModeOnly`, the Cobra by cable) there is
+    /// no entry to write: the firmware keeps DPI Cycle, the only binding it takes there, and the
+    /// action is saved at once; any other binding changes nothing.
     func configureDpiCycle(_ binding: BLEProtocol.DPIButtonBinding,
                            softwareAction: RemapAction? = nil, controller: MouseController) {
         guard softwareAction == nil || remappingPermissionsGranted else { return }
         dpiBridgeBindingConfirmed = false
+        if supportsDpiPrivateKeys, !supportsDpiButtonBinding {
+            guard binding == .dpiCycle else { return }
+            saveDpiSoftwareAction(softwareAction)
+            return
+        }
         if supportsDpiPrivateKeys, controller.dpiCycleButtonBinding == binding, !controller.isUpdatingDpiCycleButton {
             saveDpiSoftwareAction(softwareAction)
             return
@@ -1370,12 +1403,16 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// button cycling DPI is the firmware's own job), a mouse button it can send, a key
     /// combination it can type. Anything else is MacRazer's: F20 for it to turn into `action`,
     /// or on a mouse with `privateKeys`, DPI Cycle, which the button does with MacRazer closed,
-    /// and driver mode while it runs.
-    static func dpiButtonAssignment(for action: RemapAction, privateKeys: Bool = false)
+    /// and driver mode while it runs. Without an entry to write (`onboardEntry` false, the
+    /// Cobra by cable) the mouse runs nothing but its DPI Cycle, so every other action,
+    /// a mouse button or a key it could type over Bluetooth included, is MacRazer's.
+    static func dpiButtonAssignment(for action: RemapAction, privateKeys: Bool = false, onboardEntry: Bool = true)
         -> (binding: BLEProtocol.DPIButtonBinding, softwareAction: RemapAction?) {
         switch action {
         case .passthrough, .dpiCycle:
             return (.dpiCycle, nil)
+        case _ where !onboardEntry:
+            return (.dpiCycle, action)
         case .keystroke(let keyCode, let modifiers, _):
             if let usage = BLEProtocol.hidUsage(forMacKeyCode: keyCode) {
                 let flags = CGEventFlags(rawValue: modifiers)
@@ -1398,7 +1435,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// to carry out and the event tap isn't available, and so nothing was written.
     @discardableResult
     func configureDpiButton(_ action: RemapAction, controller: MouseController) -> Bool {
-        let assignment = Self.dpiButtonAssignment(for: action, privateKeys: supportsDpiPrivateKeys)
+        let assignment = Self.dpiButtonAssignment(for: action, privateKeys: supportsDpiPrivateKeys,
+                                                  onboardEntry: supportsDpiButtonBinding)
         guard assignment.softwareAction == nil || remappingPermissionsGranted else { return false }
         configureDpiCycle(assignment.binding, softwareAction: assignment.softwareAction, controller: controller)
         return true
@@ -1435,7 +1473,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     }
 
     func saveDpiSoftwareAction(_ action: RemapAction?) {
-        guard supportsDpiButtonBinding else { return }
+        guard offersDpiButton else { return }
         let previous = dpiCycleSoftwareAction
         // A hold of the DPI button was started with what it did before.
         if action != previous, gestureHold?.trigger == Self.dpiButton { gestureHold = nil }
@@ -1452,7 +1490,7 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
 
     private func loadDpiSoftwareAction() {
         dpiCycleSoftwareAction = nil
-        guard supportsDpiButtonBinding,
+        guard offersDpiButton,
               let data = defaults.data(forKey: "dpiCycleSoftwareAction-\(activeKey)") else { return }
         dpiCycleSoftwareAction = try? JSONDecoder().decode(RemapAction.self, from: data)
     }
@@ -1737,7 +1775,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     /// release: not when its device went away (`PrivateKeyEvent.deviceGone`), nor after any
     /// reset ended the hold first. Any other action fires on the short key, and a long press
     /// does nothing. Keys count only while driver mode is engaged and the mouse is connected;
-    /// the short key's release, and any other code, do nothing.
+    /// the short key's release, and any other code, do nothing (another code going down is
+    /// named in the trace).
     func handlePrivateKey(_ event: PrivateKeyEvent) {
         guard let keys = dpiPrivateKeys, privateKeysActive, !remappingPaused,
               let action = dpiCycleSoftwareAction else {
@@ -1760,6 +1799,11 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             guard case .gesture(let bindings) = action else { return apply(action) }
             GestureDebugLog.log("short press: Click is \(bindings.click.label)")
             perform(bindings.click, trigger: Self.dpiButton)
+        case (let code, true):
+            // Neither key of this mouse's row. On a link whose keys are taken from another (the
+            // Cobra's cable, from Bluetooth) this is the trace's sign that they differ there.
+            GestureDebugLog.log(String(format: "PRIVKEY %02x is neither key expected for this mouse (short %02x, long %02x)",
+                                       code, keys.short, keys.long))
         default:
             break
         }

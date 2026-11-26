@@ -137,6 +137,14 @@ struct RazerDeviceInfo {
     /// What the hardware does wins over what the protocol suggests: another project saw its
     /// Bluetooth link fail when writing driver mode on a Basilisk V3 X HyperSpeed, so this is
     /// set only for a mouse seen doing all of the above.
+    ///
+    /// On a cable or dongle the same mode is command 00/04 (`RazerCommands.setDeviceMode`), and
+    /// the keys come in report 4 of the mouse's keyboard interface (`PrivateKeyInterface`). The
+    /// Cobra HyperSpeed's cable (0x00DA) took driver mode, read it back and went back to normal
+    /// mode; which keys its button sends there is taken from Bluetooth until a trace of a
+    /// press shows it. Such a row has no `supportsDpiButtonBinding`: nothing is written to the
+    /// button's entry, so only actions MacRazer carries out are offered beside DPI Cycle. Its
+    /// dongle (0x00DB) isn't set: nothing has been tried on it.
     var dpiButtonPrivateKeys: DpiButtonPrivateKeys? = nil
     /// The Basilisk V3 X's Multi-function (HyperShift) trigger, an onboard modifier its
     /// Bluetooth firmware doesn't let anything remap. The Buttons page says so.
@@ -210,7 +218,13 @@ enum RazerDevices {
         // 0x1f throughout: hardware-verified on the HyperSpeed (both PIDs), and what
         // OpenRazer uses for the whole Cobra Pro family.
         .init(pid: 0x00DB, name: "Razer Cobra HyperSpeed", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .wirelessDongle, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed"),
-        .init(pid: 0x00DA, name: "Razer Cobra HyperSpeed (Wired)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .wired, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed"),
+        // The DPI button by cable: driver mode only (`dpiButtonPrivateKeys`). Command 00/04 took
+        // `03 00`, read back as driver mode and held over seconds, and `00 00` went back the
+        // same way (firmware v1.0, control interface, 0x1f). The keys are taken to be the ones
+        // seen over Bluetooth until a trace of a press says otherwise. No entry 0x60 is
+        // written over USB, so `supportsDpiButtonBinding` stays off: the firmware keeps its DPI
+        // Cycle and every other action is MacRazer's.
+        .init(pid: 0x00DA, name: "Razer Cobra HyperSpeed (Wired)", unverified: [], hasBattery: true, hasLighting: true, maxDPI: 26000, transactionId: 0x1f, matrixTransactionId: 0x1f, connection: .wired, silhouette: .cobraPro, dischargeCurveModelKey: "cobra-hyperspeed", dpiButtonPrivateKeys: .cobraHyperSpeed),
         // Over Bluetooth (vendor 0x068E). Hardware-verified with this app: battery, serial,
         // DPI stages and brightness on LOGO_LED, the same LED as over USB. Transaction ids
         // don't apply: BLE frames carry their own request id.
