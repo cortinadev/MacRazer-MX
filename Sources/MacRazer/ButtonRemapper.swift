@@ -497,6 +497,10 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
         loadMappings()
         loadDpiSoftwareAction()
         refreshAccessibility(prompt: false)
+        // The hidden switches for timing drags through the tap and for making it wait. After
+        // the tap is installed, so a launch with the timing on says rightly whether it has drags.
+        DragTiming.start { [weak self] in self?.tapsDrags ?? false }
+        MainThreadBusy.start()
         // Keep the named apps current while the page is open: quitting one is what the note
         // asks for. A launched app may create its tap a moment after it starts.
         let center = NSWorkspace.shared.notificationCenter
@@ -873,7 +877,14 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
     private static let tapCallback: CGEventTapCallBack = { _, type, event, userInfo in
         guard let userInfo else { return Unmanaged.passUnretained(event) }
         let remapper = Unmanaged<ButtonRemapper>.fromOpaque(userInfo).takeUnretainedValue()
-        return remapper.handle(type: type, event: event)
+        // One boolean test per event while the hidden drag timing is off.
+        guard DragTiming.isOn else { return remapper.handle(type: type, event: event) }
+        return DragTiming.measure(type: type, event: event) { remapper.handle(type: type, event: event) }
+    }
+
+    /// The tap asks for extra-button drags now, which is when `DragTiming` has any to time.
+    private var tapsDrags: Bool {
+        tapMask & (CGEventMask(1) << CGEventMask(CGEventType.otherMouseDragged.rawValue)) != 0
     }
 
     private static let magic: Int64 = 0x52415A45 // "RAZE" — marks events we post, to skip them

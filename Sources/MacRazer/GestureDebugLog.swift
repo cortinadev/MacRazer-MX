@@ -61,7 +61,12 @@ enum GestureDebugLog {
     /// device queue. The message is an autoclosure so a disabled log costs one boolean test.
     static func log(_ message: @autoclosure () -> String) {
         guard enabled else { return }
-        let text = message()
+        write(message())
+    }
+
+    /// Appends a line whether the trace is on or not: for the hidden test switches that have
+    /// their own key and write to the same file (`DragTiming`, `MainThreadBusy`). Any thread.
+    static func write(_ text: String) {
         lock.lock()
         defer { lock.unlock() }
         let line = String(format: "%9.3f %@\n", Date().timeIntervalSince(start), text)
