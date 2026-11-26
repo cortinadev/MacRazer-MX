@@ -1800,8 +1800,8 @@ final class ButtonRemapper: ObservableObject, @unchecked Sendable {
             GestureDebugLog.log("short press: Click is \(bindings.click.label)")
             perform(bindings.click, trigger: Self.dpiButton)
         case (let code, true):
-            // Neither key of this mouse's row. On a link whose keys are taken from another (the
-            // Cobra's cable, from Bluetooth) this is the trace's sign that they differ there.
+            // Neither key of this mouse's row. On a link whose keys are taken from another
+            // before a press was traced there, this is the trace's sign that they differ.
             GestureDebugLog.log(String(format: "PRIVKEY %02x is neither key expected for this mouse (short %02x, long %02x)",
                                        code, keys.short, keys.long))
         default:

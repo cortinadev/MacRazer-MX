@@ -757,7 +757,7 @@ described here.
  |---|---|---|---|
  | `baseline`, no load | 0.08 to 0.10 ms | 2.08 ms | 9.43 ms |
  | `cpu`, every core busy (22 loops) | 0.05 to 0.09 ms | 0.22 ms | 8.99 ms |
- | `busy`, main thread blocked 20 ms in every 50 | not noted | 19.5 ms | 22.9 ms |
+ | `busy`, main thread blocked 20 ms in every 50 | 0.15 to 0.24 ms | 19.5 ms | 22.9 ms |
 
  Every core busy did not make the drags later than at rest, while a blocked main thread shows
  up almost one for one: the p95 is close to the 20 ms block, which is what the tap's
